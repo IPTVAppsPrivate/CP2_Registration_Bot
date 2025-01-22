@@ -16,6 +16,10 @@ from telegram.ext import (
     filters,
 )
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (useful for local testing)
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(
@@ -29,15 +33,10 @@ def escape_markdown_v2(text):
     escape_chars = r'\\_*[]()~`>#+-=|{}.!'
     return ''.join(['\\' + c if c in escape_chars else c for c in text])
 
-# Replace with your new bot's token after regeneration
-BOT_TOKEN = '8173206813:AAF38N1E0N7PJl7hbvY2U5CvVDen18Qf-8c
-'
-
-# Define your group chat ID
-GROUP_CHAT_ID = -1002421647826
-
-# Endpoint for license key verification
-LICENSE_CHECK_URL = "http://jlw-cdn.com/.ian/check.php"
+# Fetch environment variables
+BOT_TOKEN = os.getenv('BOT_TOKEN')  # Telegram bot token
+GROUP_CHAT_ID = int(os.getenv('GROUP_CHAT_ID', -100123456789))  # Telegram group chat ID
+LICENSE_CHECK_URL = os.getenv('LICENSE_CHECK_URL', "http://example.com/check.php")  # License verification URL
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_message = (
@@ -84,8 +83,8 @@ async def check_license_callback(update: Update, context: ContextTypes.DEFAULT_T
         # Verify license key with the server
         response = requests.post(LICENSE_CHECK_URL, data={"licensekey": license_key})
         response_data = response.json()
-
-        if response.status_code == 200 and response_data.get('valid'):
+        
+    if response.status_code == 200 and response_data.get('valid'):
             try:
                 # Add the user to the group
                 await context.bot.add_chat_member(
@@ -102,8 +101,7 @@ async def check_license_callback(update: Update, context: ContextTypes.DEFAULT_T
                 await query.edit_message_text(escaped_failure_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
         else:
             failure_message = (
-                "❌ *Invalid license key.* Please ensure you have purchased a valid license from "
-                "[COCKPIT STORE](https://store.cockpit.lol/)."
+                "❌ *Invalid license key.* Please ensure you have purchased a valid license."
             )
             escaped_failure_message = escape_markdown_v2(failure_message)
             await query.edit_message_text(escaped_failure_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
@@ -114,6 +112,11 @@ async def check_license_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.edit_message_text(escaped_error_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
 
 def main():
+    # Ensure the bot token is set
+    if not BOT_TOKEN:
+        logger.error("BOT_TOKEN environment variable is not set.")
+        return
+
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Register handlers
