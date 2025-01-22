@@ -83,8 +83,7 @@ async def check_license_callback(update: Update, context: ContextTypes.DEFAULT_T
         # Verify license key with the server
         response = requests.post(LICENSE_CHECK_URL, data={"licensekey": license_key})
         response_data = response.json()
-        
-    if response.status_code == 200 and response_data.get('valid'):
+            if response.status_code == 200 and response_data.get('valid'):
             try:
                 # Add the user to the group
                 await context.bot.add_chat_member(
