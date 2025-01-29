@@ -19,7 +19,7 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
-PROCESS_ENV_PORT = process.env.PORT("4000")
+
 
 # Configure Logging
 logging.basicConfig(
