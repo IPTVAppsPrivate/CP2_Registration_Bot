@@ -18,7 +18,7 @@ load_dotenv()
 # Fetch configuration from environment variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
-LICENSE_CHECK_URL = int(os.getenv("LICENSE_CHECK_URL"))
+LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
 
 # Configure Logging
 logging.basicConfig(
