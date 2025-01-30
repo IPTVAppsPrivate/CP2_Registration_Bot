@@ -1,4 +1,3 @@
-
 import json
 import logging
 import requests
@@ -15,15 +14,16 @@ from telegram.ext import (
     ContextTypes,
     filters,
     CallbackContext,
+    JobQueue
 )
 
 # Load environment variables
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))  # Convert to int to avoid API issues
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # Keep as string to avoid API conversion issues
 LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
-ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID"))  # Admin ID for manual blocking/unblocking
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")  # Admin ID for manual blocking/unblocking
 
 # Ensure required environment variables are defined
 if not BOT_TOKEN or not GROUP_CHAT_ID or not LICENSE_CHECK_URL or not ADMIN_USER_ID:
@@ -46,10 +46,12 @@ MAX_RETRIES = 3  # Maximum retries for generating an invite link
 MAX_FAILED_ATTEMPTS = 5  # Maximum incorrect attempts before blocking
 DELETE_AFTER_SECONDS = 600  # 10 minutes
 
+
 def escape_markdown(text):
     """Escapes special characters for MarkdownV2 formatting."""
     escape_chars = r'_*[\]()~`>#+-=|{}.!'
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
+
 
 async def is_user_in_group(user_id, context):
     """Check if the user is already a member of the group."""
@@ -60,18 +62,20 @@ async def is_user_in_group(user_id, context):
         logger.error(f"Error checking user membership for {user_id}: {e}")
         return False  # Assume user is not in the group if an error occurs
 
+
 async def generate_invite_link(context):
     """Tries to generate an invite link with retries, ensuring a 12-second expiration."""
     for attempt in range(MAX_RETRIES):
         try:
             invite_link = await context.bot.create_chat_invite_link(
-                GROUP_CHAT_ID, expire_date=time.time() + 12
+                GROUP_CHAT_ID, expire_date=int(time.time() + 12)  # Convert to integer timestamp
             )
             return invite_link.invite_link
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed to generate invite link: {e}")
             await asyncio.sleep(2)  # Wait before retrying
     return None  # If all retries fail, return None
+
 
 async def delete_message(context: CallbackContext):
     """Deletes a message after the set delay."""
@@ -81,10 +85,12 @@ async def delete_message(context: CallbackContext):
     except Exception as e:
         logger.error(f"Failed to delete message {message_id}: {e}")
 
+
 async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, parse_mode=None):
     """Sends a message and schedules it for deletion after DELETE_AFTER_SECONDS."""
     sent_message = await update.message.reply_text(text, parse_mode=parse_mode)
     context.job_queue.run_once(delete_message, DELETE_AFTER_SECONDS, data=(update.message.chat_id, sent_message.message_id))
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
@@ -95,11 +101,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received /start from user: {update.effective_user.id}")
     welcome_message = (
         """👋 Welcome! Please provide your license key for verification.
-
-
+        
         Once verified, I will send you the invite link to the group."""
     )
     await send_and_schedule_delete(update, context, welcome_message)
+
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles license verification and invite link generation."""
@@ -110,13 +116,13 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ✅ Check if user is blocked
     if user_id in blocked_users:
-        await send_and_schedule_delete(update, context, "🚫 You have been blocked due to multiple incorrect attempts. Please contact the administrator.")
+        await send_and_schedule_delete(update, context, "🚫 You have been blocked due to multiple incorrect attempts. Please contact the administrator @SanchezC137Media .")
         return
 
     # ✅ Check if this verification code is already registered to another user
     if license_key in verification_codes and verification_codes[license_key] != user_id:
         blocked_users.add(user_id)  # Automatically block the second user
-        await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. You have been blocked for suspicious activity. Contact the administrator.")
+        await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. You have been blocked for suspicious activity. Contact the administrator @SanchezC137Media .")
         return
 
     # ✅ Safe way to add `user_id` to `processing_users`
@@ -132,7 +138,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if await is_user_in_group(user_id, context):
                 await send_and_schedule_delete(update, context, "✅ You are already a member of the group. No invite is needed.")
                 return
-            
+
             # ✅ Generate invite link for users who are NOT in the group
             invite_link = await generate_invite_link(context)
 
@@ -159,8 +165,19 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         processing_users.discard(user_id)
 
+
+async def init_job_queue(app):
+    """Ensure job queue is properly initialized."""
+    job_queue = app.job_queue  # ✅ Use the built-in job_queue, don't overwrite it
+    job_queue.start()
+
+
 if __name__ == "__main__":
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).post_init(init_job_queue).build()
+
+    # Add command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license))
+
+    # Run polling
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
