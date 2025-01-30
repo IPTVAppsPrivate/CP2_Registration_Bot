@@ -116,7 +116,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"Received /start from user: {update.effective_user.id}")
     welcome_message = (
-        "\ud83d\udc4b Welcome! Please provide your license key for verification.\n\n"
+        "👋 Welcome! Please provide your license key for verification.\n\n"
         "Once verified, I will send you the invite link to the group."
     )
     await send_and_schedule_delete(update, context, welcome_message)
