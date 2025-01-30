@@ -4,6 +4,7 @@ import requests
 import re
 import os
 import time
+import asyncio  # ✅ Ensure asyncio is imported
 from dotenv import load_dotenv
 from telegram import Update, constants
 from telegram.ext import (
@@ -18,7 +19,7 @@ from telegram.ext import (
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # Keep as string, no int conversion
+GROUP_CHAT_ID = int(os.getenv("GROUP_CHAT_ID"))  # ✅ Ensure this is correctly converted to int
 LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
 
 # Configure Logging
@@ -60,7 +61,7 @@ async def generate_invite_link(context):
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed to generate invite link: {e}")
             if attempt < MAX_RETRIES - 1:
-                time.sleep(2)  # Retry after delay
+                await asyncio.sleep(2)  # ✅ Fixed: using async sleep
             else:
                 return None  # No more attempts after max retries
 
@@ -70,14 +71,18 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = update.effective_user.id
 
-    # Prevent duplicate execution
+    # ✅ Correct indentation
     if user_id in processing_users:
         logger.info(f"Skipping duplicate request from user {user_id}")
         return
-    processing_users.add(user_id)  # Mark user as being processed
 
     if update.message.chat.type != "private":
         logger.info(f"Ignored message from chat ID: {update.message.chat_id}")
+        return
+
+    if not LICENSE_CHECK_URL:
+        logger.error("🚨 LICENSE_CHECK_URL is missing from .env file")
+        await update.message.reply_text("⚠️ Internal error. Please contact support.")
         return
 
     message_id = update.message.message_id
@@ -91,16 +96,21 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     license_key = update.message.text.strip()
     logger.info(f"License key received: {license_key} from user {user_id}")
 
-    if not LICENSE_CHECK_URL:
-        logger.error("🚨 LICENSE_CHECK_URL is missing from .env file")
-        await update.message.reply_text("⚠️ Internal error. Please contact support.")
-        return
-
+    # ✅ Safe way to add `user_id` to `processing_users`
+    processing_users.add(user_id)
     try:
-        # Verify the license key via the provided API
-        response = requests.post(LICENSE_CHECK_URL, data={"licensekey": license_key}, timeout=10)
-        logger.debug(f"License verification response: {response.text}")
-        response.raise_for_status()
+        # 🔹 Verify the license key via API
+        try:
+            response = requests.post(LICENSE_CHECK_URL, data={"licensekey": license_key}, timeout=10)
+            response.raise_for_status()
+        except requests.exceptions.Timeout:
+            logger.error(f"Timeout error while verifying license for user {user_id}")
+            await update.message.reply_text("⚠️ License verification timed out. Try again later.")
+            return
+        except requests.exceptions.ConnectionError:
+            logger.error(f"Network error while verifying license for user {user_id}")
+            await update.message.reply_text("⚠️ Unable to connect to the license server. Try again later.")
+            return
 
         try:
             response_data = response.json()
@@ -110,7 +120,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if response_data.get("status") == "Valid":
-            # Ensure bot has permission to invite users
+            # ✅ Ensure the bot is an admin before generating the invite link
             chat_member = await context.bot.get_chat_member(GROUP_CHAT_ID, context.bot.id)
             if chat_member.status not in ["administrator", "creator"]:
                 logger.error("🚨 The bot is not an admin in the group!")
@@ -119,7 +129,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-            # Try generating an invite link
+            # ✅ Try generating an invite link
             invite_link = await generate_invite_link(context)
 
             if invite_link:
@@ -135,8 +145,6 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 await update.message.reply_text(error_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
 
-            return  # 🔹 Stop execution to avoid duplicate messages
-
         else:
             await update.message.reply_text(
                 "❌ Invalid license key. Please make sure you have entered a valid key."
@@ -149,7 +157,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     finally:
-        # Ensure the user is removed from the processing set after completion
+        # ✅ Ensures user is removed from the processing list in case of failure
         processing_users.discard(user_id)
 
 def main():
