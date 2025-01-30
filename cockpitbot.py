@@ -19,77 +19,85 @@ from telegram.ext import (
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
-# ✅ Load environment variables
+# ✅ Cargar variables de entorno
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # Keep as string to avoid API conversion issues
+GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
-ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")  # Admin ID for manual blocking/unblocking
+ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 
-# ✅ Ensure required environment variables are defined
+# ✅ Asegurar que la API se use en HTTP si no tiene SSL
+if LICENSE_CHECK_URL.startswith("https://"):
+    LICENSE_CHECK_URL = LICENSE_CHECK_URL.replace("https://", "http://")
+
+# ✅ Validar que las variables necesarias están presentes
 if not BOT_TOKEN or not GROUP_CHAT_ID or not LICENSE_CHECK_URL or not ADMIN_USER_ID:
     raise ValueError("🚨 ERROR: Missing environment variables in the .env file")
 
-# ✅ Configure logging
+# ✅ Configuración de logs
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# ✅ Global storage for tracking failed attempts, blocked users, and used verification codes
+# ✅ Variables globales
 failed_attempts = {}
 blocked_users = set()
-processed_messages = set()
 processing_users = set()
-verification_codes = {}  # Stores used verification codes mapped to user IDs
-MAX_RETRIES = 3  # Maximum retries for generating an invite link
-MAX_FAILED_ATTEMPTS = 5  # Maximum incorrect attempts before blocking
-DELETE_AFTER_SECONDS = 600  # 10 minutes
+verification_codes = {}
+MAX_RETRIES = 3
+MAX_FAILED_ATTEMPTS = 5
+DELETE_AFTER_SECONDS = 600
 
-# ✅ Custom TLS Adapter to handle SSL/TLS issues
-class TLSAdapter(HTTPAdapter):
-    """Forces requests to use a secure TLS version."""
-    def init_poolmanager(self, *args, **kwargs):
-        context = create_urllib3_context()
-        context.set_ciphers("DEFAULT@SECLEVEL=1")  # Reduce security level for compatibility
-        kwargs["ssl_context"] = context
-        super().init_poolmanager(*args, **kwargs)
-
-# ✅ Apply TLSAdapter to requests session
+# ✅ Configurar sesión de requests para HTTP y HTTPS
 session = requests.Session()
-session.mount("https://", TLSAdapter())
+
+if LICENSE_CHECK_URL.startswith("https://"):
+    class TLSAdapter(HTTPAdapter):
+        """Forzar compatibilidad con TLS"""
+        def init_poolmanager(self, *args, **kwargs):
+            context = create_urllib3_context()
+            context.set_ciphers("DEFAULT@SECLEVEL=1")  # Reduce la seguridad para compatibilidad
+            kwargs["ssl_context"] = context
+            super().init_poolmanager(*args, **kwargs)
+
+    session.mount("https://", TLSAdapter())
+else:
+    session.mount("http://", HTTPAdapter())
+
+# ✅ Funciones auxiliares
 
 def escape_markdown(text):
-    """Escapes special characters for MarkdownV2 formatting."""
+    """Escapa caracteres especiales en MarkdownV2."""
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
 
 async def is_user_in_group(user_id, context):
-    """Check if the user is already a member of the group."""
+    """Verifica si el usuario ya está en el grupo."""
     try:
         member = await context.bot.get_chat_member(GROUP_CHAT_ID, user_id)
         return member.status in ['member', 'administrator', 'creator']
     except Exception as e:
         logger.error(f"Error checking user membership for {user_id}: {e}")
-        return False  # Assume user is not in the group if an error occurs
+        return False
 
 async def generate_invite_link(context):
-    """Tries to generate an invite link with retries, ensuring a 12-second expiration."""
+    """Genera un enlace de invitación con reintentos."""
     for attempt in range(MAX_RETRIES):
         try:
             invite_link = await context.bot.create_chat_invite_link(
-                GROUP_CHAT_ID, expire_date=int(time.time() + 12)  # Convert to integer timestamp
+                GROUP_CHAT_ID, expire_date=int(time.time() + 12)
             )
             return invite_link.invite_link
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed to generate invite link: {e}")
-            await asyncio.sleep(2)  # Wait before retrying
-    return None  # If all retries fail, return None
+            await asyncio.sleep(2)
+    return None
 
 async def delete_message(context: CallbackContext):
-    """Deletes a message after the set delay."""
+    """Borra un mensaje después de un tiempo."""
     chat_id, message_id = context.job.data
     try:
         await context.bot.delete_message(chat_id, message_id)
@@ -97,12 +105,12 @@ async def delete_message(context: CallbackContext):
         logger.error(f"Failed to delete message {message_id}: {e}")
 
 async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, parse_mode=None):
-    """Sends a message and schedules it for deletion after DELETE_AFTER_SECONDS."""
+    """Envía un mensaje y lo programa para ser eliminado."""
     sent_message = await update.message.reply_text(text, parse_mode=parse_mode)
     context.job_queue.run_once(delete_message, DELETE_AFTER_SECONDS, data=(update.message.chat_id, sent_message.message_id))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /start command."""
+    """Maneja el comando /start."""
     if update.message.chat.type != "private":
         logger.info(f"Ignored /start from chat ID: {update.message.chat_id}")
         return
@@ -115,7 +123,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_and_schedule_delete(update, context, welcome_message)
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles license verification and invite link generation."""
+    """Maneja la verificación de licencias y generación de enlaces de invitación."""
     global failed_attempts, blocked_users, verification_codes
     
     user_id = update.effective_user.id
