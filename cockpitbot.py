@@ -197,17 +197,23 @@ async def block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ✅ Comando para desbloquear usuarios manualmente (solo admin)
 async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = context.args[0] if context.args else None
-    if not user_id:
-        await update.message.reply_text("❌ Debes proporcionar un ID de usuario para desbloquear.")
+    if not context.args:
+        await update.message.reply_text("❌ Debes proporcionar un nombre de usuario para desbloquear.")
         return
     
     if str(update.message.from_user.id) != ADMIN_USER_ID:
         await update.message.reply_text("🚫 No tienes permisos para usar este comando.")
         return
 
-    blocked_users.discard(int(user_id))
-    await update.message.reply_text(f"✅ Usuario {user_id} ha sido desbloqueado.")
+    username = context.args[0].replace("@", "")  # Remover @ si lo incluye
+
+    if username not in blocked_users_dict:
+        await update.message.reply_text(f"❌ El usuario @{username} no está bloqueado.")
+        return
+
+    user_id = blocked_users_dict.pop(username)
+    blocked_users.discard(user_id)
+    await update.message.reply_text(f"✅ Usuario @{username} ({user_id}) ha sido desbloqueado exitosamente.")
 
 application.add_handler(CommandHandler("block", block))
 application.add_handler(CommandHandler("unblock", unblock))
