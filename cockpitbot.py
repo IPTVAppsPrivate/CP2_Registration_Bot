@@ -179,3 +179,35 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license))
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+
+
+# ✅ Comando para bloquear usuarios manualmente (solo admin)
+async def block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = context.args[0] if context.args else None
+    if not user_id:
+        await update.message.reply_text("❌ Debes proporcionar un ID de usuario para bloquear.")
+        return
+    
+    if str(update.message.from_user.id) != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 No tienes permisos para usar este comando.")
+        return
+
+    blocked_users.add(int(user_id))
+    await update.message.reply_text(f"✅ Usuario {user_id} ha sido bloqueado.")
+
+# ✅ Comando para desbloquear usuarios manualmente (solo admin)
+async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user_id = context.args[0] if context.args else None
+    if not user_id:
+        await update.message.reply_text("❌ Debes proporcionar un ID de usuario para desbloquear.")
+        return
+    
+    if str(update.message.from_user.id) != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 No tienes permisos para usar este comando.")
+        return
+
+    blocked_users.discard(int(user_id))
+    await update.message.reply_text(f"✅ Usuario {user_id} ha sido desbloqueado.")
+
+application.add_handler(CommandHandler("block", block))
+application.add_handler(CommandHandler("unblock", unblock))
