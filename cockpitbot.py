@@ -217,3 +217,88 @@ async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 application.add_handler(CommandHandler("block", block))
 application.add_handler(CommandHandler("unblock", unblock))
+
+# ✅ Dictionary to store blocked users with their username
+blocked_users_dict = {}  # {username: user_id}
+
+# ✅ Function to check if the user is blocked by Rose Bot
+async def is_user_blocked_by_rose(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    """Checks if the user is blocked by Rose Bot in the group."""
+    try:
+        chat_member = await context.bot.get_chat_member(GROUP_CHAT_ID, user_id)
+        if chat_member.status in ["kicked", "restricted"]:
+            return True
+    except Exception as e:
+        return False
+    return False
+
+# ✅ Command to block users manually (admin only)
+async def block(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Allows the admin to block a user using username or ID."""
+    if not context.args:
+        await update.message.reply_text("❌ You must provide a username or ID to block.")
+        return
+
+    if str(update.message.from_user.id) != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 You do not have permission to use this command.")
+        return
+
+    username_or_id = context.args[0].replace("@", "")  # Remove @ if included
+
+    try:
+        # Try to get the user ID if a username was provided
+        if username_or_id.isdigit():
+            user_id = int(username_or_id)
+        else:
+            chat = await context.bot.get_chat(username_or_id)
+            user_id = chat.id
+
+        # Block the user
+        blocked_users.add(user_id)
+        blocked_users_dict[username_or_id] = user_id
+        await update.message.reply_text(f"✅ User @{username_or_id} ({user_id}) has been blocked.")
+    
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not block @{username_or_id}. Error: {str(e)}")
+
+# ✅ Command to unblock users manually (admin only)
+async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Allows the admin to unblock a user using username or ID."""
+    if not context.args:
+        await update.message.reply_text("❌ You must provide a username or ID to unblock.")
+        return
+
+    if str(update.message.from_user.id) != ADMIN_USER_ID:
+        await update.message.reply_text("🚫 You do not have permission to use this command.")
+        return
+
+    username_or_id = context.args[0].replace("@", "")  # Remove @ if included
+
+    try:
+        # Try to get the user ID if a username was provided
+        if username_or_id.isdigit():
+            user_id = int(username_or_id)
+        else:
+            if username_or_id not in blocked_users_dict:
+                await update.message.reply_text(f"❌ The user @{username_or_id} is not blocked by this bot.")
+                return
+            user_id = blocked_users_dict.pop(username_or_id)
+
+        # Check if Rose Bot has blocked the user
+        if await is_user_blocked_by_rose(update, context, user_id):
+            await update.message.reply_text(f"❌ The user @{username_or_id} is blocked by Rose Bot and cannot be unblocked from here.")
+            return
+
+        # Unblock the user
+        if user_id in blocked_users:
+            blocked_users.discard(user_id)
+            await update.message.reply_text(f"✅ User @{username_or_id} ({user_id}) has been unblocked.")
+        else:
+            await update.message.reply_text(f"❌ The user @{username_or_id} was not blocked by this bot.")
+    
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not unblock @{username_or_id}. Error: {str(e)}")
+
+# ✅ Register the handlers for block/unblock commands
+application.add_handler(CommandHandler("block", block))
+application.add_handler(CommandHandler("unblock", unblock))
