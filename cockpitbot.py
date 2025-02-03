@@ -19,6 +19,10 @@ from telegram.ext import (
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
+# --- Apply nest_asyncio to allow nested event loops ---
+import nest_asyncio
+nest_asyncio.apply()
+
 # --- Load environment variables ---
 load_dotenv()
 
@@ -365,9 +369,11 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        # Creamos un nuevo event loop y lo establecemos para evitar conflictos
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(main())
     except RuntimeError as e:
-        # If the event loop is already running, get the running loop, create the task and run_forever
         if "already running" in str(e):
             loop = asyncio.get_event_loop()
             loop.create_task(main())
