@@ -354,19 +354,20 @@ async def main():
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("unblockid", admin_unblockid, filters=filters.ChatType.PRIVATE))
 
-    # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
+    # Run polling with optimized parameters: long polling with timeout=60, poll_interval=1.0, and don't close the event loop.
     await application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         timeout=60,
-        poll_interval=1.0
+        poll_interval=1.0,
+        close_loop=False
     )
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except RuntimeError as e:
-        # Si el error indica que el event loop ya está corriendo, reutilízalo.
+        # If the event loop is already running, get the running loop, create the task and run_forever
         if "already running" in str(e):
             loop = asyncio.get_event_loop()
             loop.create_task(main())
