@@ -24,7 +24,7 @@ GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")  # Keep as string
 LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
 LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
-BLOCKED_USERS_FILE = "blocked_users.json"  # New file for blocked users
+BLOCKED_USERS_FILE = "blocked_users.json"  # File for blocked users
 
 # Admin User ID (set from .env, fallback to default placeholder)
 ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "123456789"))
@@ -33,21 +33,23 @@ ADMIN_USER_ID = int(os.getenv("ADMIN_USER_ID", "123456789"))
 if not BOT_TOKEN or not GROUP_CHAT_ID or not LICENSE_CHECK_URL:
     raise ValueError("🚨 Missing required environment variables! Please check your .env file.")
 
-# Configure Logging (set level via .env, default to INFO)
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+# Force HTTP if the LICENSE_CHECK_URL starts with HTTPS (for compatibility)
+if LICENSE_CHECK_URL.startswith("https://"):
+    LICENSE_CHECK_URL = LICENSE_CHECK_URL.replace("https://", "http://")
+
+# Configure Logging (default level INFO)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
-
 logger.info("✅ Bot successfully initialized with environment variables.")
 
 # Global storage
 users_in_progress = set()
 MAX_FAILED_ATTEMPTS = 5
 MAX_RETRIES = 3
-AUTO_DELETE_TIME = 1500  # ⏳ 25 minutes (1500 seconds)
+AUTO_DELETE_TIME = 1500  # 25 minutes in seconds
 
 # Load data from file safely
 def load_json_data(file_path):
@@ -57,7 +59,7 @@ def load_json_data(file_path):
                 return json.load(file)
         except (json.JSONDecodeError, IOError):
             logger.warning(f"⚠️ Warning: Could not load {file_path}, using default empty dictionary.")
-            return {}  # If the file is empty or corrupted, return an empty dictionary
+            return {}
     return {}
 
 def save_json_data(file_path, data):
@@ -78,7 +80,7 @@ def escape_markdown(text):
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
 
 async def auto_delete_message(context, chat_id, message_id):
-    """Deletes a message after AUTO_DELETE_TIME (25 minutes)."""
+    """Deletes a message after AUTO_DELETE_TIME seconds."""
     await asyncio.sleep(AUTO_DELETE_TIME)
     try:
         await context.bot.delete_message(chat_id=chat_id, message_id=message_id)
@@ -90,22 +92,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
     if update.message.chat.type != "private":
         return
-
     logger.info(f"📥 Received /start from user: {update.effective_user.id}")
-
     welcome_message = (
-        "Welcome! Please provide your license key for verification.\n\n"
-        "Once your license is verified, I will send you the invite link to the group."
+        "👋 Welcome! Please provide your license key for verification.\n\n"
+        "Once verified, I will send you the invite link to the group."
+    )
+    sent_message = await update.message.reply_text(welcome_message)
+    # Schedule auto-deletion of messages after 25 minutes
+    context.job_queue.run_once(
+        lambda _: asyncio.create_task(auto_delete_message(context, update.message.chat_id, update.message.message_id)),
+        AUTO_DELETE_TIME
+    )
+    context.job_queue.run_once(
+        lambda _: asyncio.create_task(auto_delete_message(context, sent_message.chat_id, sent_message.message_id)),
+        AUTO_DELETE_TIME
     )
 
-    sent_message = await update.message.reply_text(welcome_message)
-
-    # 🕒 Schedule message auto-deletion after 25 minutes
-    context.job_queue.run_once(lambda _: asyncio.create_task(auto_delete_message(context, update.message.chat_id, update.message.message_id)), AUTO_DELETE_TIME)
-    context.job_queue.run_once(lambda _: asyncio.create_task(auto_delete_message(context, sent_message.chat_id, sent_message.message_id)), AUTO_DELETE_TIME)
-
 async def generate_invite_link(context):
-    """Creates an invite link that expires after 12 seconds."""
+    """Generates an invite link that expires after 12 seconds, with retries."""
     expire_time = datetime.utcnow() + timedelta(seconds=12)
     for attempt in range(MAX_RETRIES):
         try:
@@ -119,62 +123,50 @@ async def generate_invite_link(context):
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed to generate invite link: {e}")
             await asyncio.sleep(2)
-    return None  # If all attempts fail, return None
+    return None
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the license key submission."""
+    """Handles license key submission and invite link generation."""
     global users_in_progress, used_license_keys, user_attempts, blocked_users
-
     if update.message.chat.type != "private":
         return
-
     user_id = str(update.effective_user.id)
     license_key = update.message.text.strip()
-
-    # 🛑 Reject if the user is a bot
+    # Reject bots
     if update.effective_user.is_bot:
         await update.message.reply_text("🤖 Bots are not allowed to join.")
         return
-
-    # ✅ Check if the user is already in the group
+    # Check if user is already in the group
     try:
         chat_member = await context.bot.get_chat_member(GROUP_CHAT_ID, user_id)
         if chat_member.status in ["member", "administrator", "creator"]:
-            sent_message = await update.message.reply_text(
-                "⚠️ You are already in the group. No need for an invite link."
-            )
+            sent_message = await update.message.reply_text("⚠️ You are already in the group. No need for an invite link.")
             asyncio.create_task(auto_delete_message(context, sent_message.chat_id, sent_message.message_id))
             return
     except Exception as e:
         logger.warning(f"Could not verify group membership for user {user_id}: {e}")
-
-    # 🚫 Check if the user is blocked
+    # Check if user is blocked
     if user_id in blocked_users:
         await update.message.reply_text("🚫 You are blocked due to too many failed attempts. Please contact the admin for assistance.")
         return
-
-    # 🚫 Check if the license has already been used
+    # Check if the license key has already been used
     if license_key in used_license_keys:
         await update.message.reply_text("⚠️ This license key has already been used by another user.")
         return
-
-    # 🔄 Prevent processing the same user multiple times
+    # Prevent duplicate processing
     if user_id in users_in_progress:
         return
     users_in_progress.add(user_id)
-
     try:
-        # ❌ Check for license verification URL
         if not LICENSE_CHECK_URL:
             await update.message.reply_text("⚠️ Internal error. Please contact support.")
             return
-
-        # 🔍 Validate the license key
         response = requests.post(LICENSE_CHECK_URL, data={"licensekey": license_key}, timeout=10)
         response.raise_for_status()
         response_data = response.json()
-
-        if response_data.get("status") == "Valid":
+        logger.info(f"License check response: {response_data}")
+        # Compare status case-insensitively
+        if response_data.get("status", "").lower() == "valid":
             invite_link = await generate_invite_link(context)
             if invite_link:
                 success_message = escape_markdown(
@@ -182,35 +174,32 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"Here is your invite link to the group: [Join Group]({invite_link})"
                 )
                 sent_message = await update.message.reply_text(success_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
-                # 🔹 Save the license key as "used"
+                # Save license key as used
                 used_license_keys[license_key] = user_id
                 save_json_data(LICENSE_STORAGE_FILE, used_license_keys)
-                # Reset user's attempts on successful verification
+                # Reset failed attempts for the user
                 if user_id in user_attempts:
                     del user_attempts[user_id]
                     save_json_data(ATTEMPTS_STORAGE_FILE, user_attempts)
-                # ⏳ Delete message after 25 minutes
                 asyncio.create_task(auto_delete_message(context, sent_message.chat_id, sent_message.message_id))
             else:
                 await update.message.reply_text("⚠️ I couldn't generate an invite link. Please contact the admin.")
         else:
-            # ❌ License key is invalid, increment attempts
             user_attempts[user_id] = user_attempts.get(user_id, 0) + 1
             remaining_attempts = MAX_FAILED_ATTEMPTS - user_attempts[user_id]
             save_json_data(ATTEMPTS_STORAGE_FILE, user_attempts)
             if remaining_attempts <= 0:
-                # 🚫 Block the user if no attempts remain
                 blocked_users[user_id] = True
                 save_json_data(BLOCKED_USERS_FILE, blocked_users)
                 await update.message.reply_text(
-                    "🚫 Too many attempts! You are blocked.\n"
-                    "Please contact **@SanchezC137Media** for assistance."
+                    "🚫 Too many attempts! You are blocked.\nPlease contact **@SanchezC137Media** for assistance."
                 )
             else:
                 await update.message.reply_text(
                     f"❌ Invalid license key. Please try again.\nYou have {remaining_attempts} attempts left."
                 )
-    except requests.exceptions.RequestException:
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error verifying license key: {e}")
         await update.message.reply_text("⚠️ Error verifying license key. Please try again later.")
     finally:
         users_in_progress.discard(user_id)
