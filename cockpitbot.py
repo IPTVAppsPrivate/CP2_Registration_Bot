@@ -293,5 +293,13 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("unblock", unblock))
     app.add_handler(CommandHandler("listblocked", list_blocked))
 
-    logger.info("🚀 Bot is running...")
-    app.run_polling()
+    logger.info("🚀 Bot is starting...")
+
+    async def main():
+        # Delete webhook to avoid conflict with getUpdates polling
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("✅ Webhook deleted. Starting polling.")
+        await app.run_polling()
+
+    # Run the main async function
+    asyncio.run(main())
