@@ -19,7 +19,7 @@ from telegram.ext import (
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
-# --- Load environment variables ---
+# --- Load environment variables (ensure sensitive tokens/keys are stored securely) ---
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -75,12 +75,15 @@ blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 processing_users = set()
 verification_codes = {}
-# Rate limiting: maximum of 5 attempts per minute per user
+# Rate limiting: maximum 5 attempts per minute per user
 RATE_LIMIT = 5
 attempt_timestamps = {}  # user_id -> list of timestamp floats
 MAX_RETRIES = 3
 MAX_FAILED_ATTEMPTS = 5
 DELETE_AFTER_SECONDS = 120  # 2 minutes
+
+# Session-ended: once a user exhausts their attempts, no further responses are given.
+session_ended = set()
 
 # --- Configure a Requests Session with TLSAdapter if needed ---
 session = requests.Session()
@@ -140,10 +143,15 @@ async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT
 # --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
+    # Allow /start even for blocked users? According to the requirement, if session ended, no response.
     if update.message.chat.type != "private":
         logger.info(f"Ignored /start from chat ID: {update.message.chat_id}")
         return
-    logger.info(f"Received /start from user: {update.effective_user.id}")
+    user_id = update.effective_user.id
+    if user_id in session_ended:
+        # No response if session ended
+        return
+    logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
         "Once verified, I will send you the invite link to the group."
@@ -152,9 +160,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles license key verification and invite link generation."""
-    global failed_attempts, blocked_users, verification_codes, attempt_timestamps
+    global failed_attempts, blocked_users, verification_codes, attempt_timestamps, session_ended
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
+
+    # If the user's session has ended, do not respond further
+    if user_id in session_ended:
+        return
 
     # --- Rate Limiting: Allow max RATE_LIMIT attempts per minute ---
     now = time.time()
@@ -170,12 +182,16 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if license_key in verification_codes and verification_codes[license_key] != user_id:
         blocked_users.add(user_id)
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
-        await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. Contact admin @SanchezC137Media.")
+        # Mark session as ended
+        if user_id not in session_ended:
+            await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. Your session has ended. Contact admin @SanchezC137Media.")
+            session_ended.add(user_id)
         return
 
-    # --- Check if the user is already in the group regardless of the license entered ---
+    # --- Check if the user is already in the group ---
     if await is_user_in_group(user_id, context):
         friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
+        # Also, if a license was sent and not yet saved, mark it as used.
         if license_key and license_key not in verification_codes:
             verification_codes[license_key] = user_id
             save_json_data(LICENSE_STORAGE_FILE, verification_codes)
@@ -192,6 +208,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         response_data = response.json()
         logger.info(f"License check response: {response_data}")
 
+        # --- If license is valid ---
         if response_data.get("status", "").lower() == "valid":
             invite_link = await generate_invite_link(context)
             if invite_link:
@@ -206,7 +223,9 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if failed_attempts[user_id] >= MAX_FAILED_ATTEMPTS:
                 blocked_users.add(user_id)
                 save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
-                await send_and_schedule_delete(update, context, "🚫 Blocked due to multiple incorrect attempts. Contact admin @SanchezC137Media.")
+                if user_id not in session_ended:
+                    await send_and_schedule_delete(update, context, "🚫 Too many incorrect attempts. Your session has ended. Contact admin @SanchezC137Media.")
+                    session_ended.add(user_id)
             else:
                 attempts_left = MAX_FAILED_ATTEMPTS - failed_attempts[user_id]
                 await send_and_schedule_delete(update, context, f"❌ Invalid license key. Please try again. You have {attempts_left} attempts left.")
@@ -214,9 +233,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error verifying license key: {e}")
         await send_and_schedule_delete(update, context, "⚠️ Error verifying license key. Please try again later.")
     finally:
-        # Remove user from processing set if present
-        if user_id in processing_users:
-            processing_users.discard(user_id)
+        processing_users.discard(user_id)
 
 # --- Administrative Commands ---
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -290,8 +307,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
 
-    # Run polling with optimized parameters:
-    # timeout=60 (long polling) and poll_interval=1.0 seconds between calls
+    # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
