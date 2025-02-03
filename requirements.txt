@@ -1,3 +1,4 @@
 python-telegram-bot[job-queue]>=20.0
 requests
 python-dotenv
+nest_asyncio==1.6.0
