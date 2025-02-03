@@ -19,7 +19,7 @@ from telegram.ext import (
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
-# --- Load environment variables (ensure sensitive tokens/keys are stored securely) ---
+# --- Load environment variables ---
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -75,18 +75,17 @@ blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 processing_users = set()
 verification_codes = {}
-# Rate limiting: maximum allowed attempts per minute per user
+# Rate limiting: maximum of 5 attempts per minute per user
 RATE_LIMIT = 5
-attempt_timestamps = {}  # dictionary: user_id -> list of timestamps (float)
+attempt_timestamps = {}  # user_id -> list of timestamp floats
 MAX_RETRIES = 3
 MAX_FAILED_ATTEMPTS = 5
-DELETE_AFTER_SECONDS = 600     # 10 minutes
+DELETE_AFTER_SECONDS = 120     # 2 minutes
 
 # --- Configure a Requests Session with TLSAdapter if needed ---
 session = requests.Session()
 if LICENSE_CHECK_URL.startswith("https://"):
     class TLSAdapter(HTTPAdapter):
-        """Forces TLS compatibility with reduced security."""
         def init_poolmanager(self, *args, **kwargs):
             context = create_urllib3_context()
             context.set_ciphers("DEFAULT@SECLEVEL=1")
@@ -157,7 +156,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # --- Rate Limiting: allow maximum RATE_LIMIT attempts per minute ---
+    # --- Rate Limiting: Allow max RATE_LIMIT attempts per minute ---
     now = time.time()
     attempt_timestamps.setdefault(user_id, [])
     # Remove timestamps older than 60 seconds
@@ -166,27 +165,22 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Too many attempts per minute. Please wait a minute before trying again.")
         return
     attempt_timestamps[user_id].append(now)
-    # ------------------------------------------------------------------
+    # --------------------------------------------------------------------
 
-    # If the user is already in the group, send friendly message
-    if await is_user_in_group(user_id, context):
-        friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
-        await send_and_schedule_delete(update, context, friendly_message)
-        return
-
-    # Check if the user is blocked (automatic blocking)
-    if user_id in blocked_users:
-        await send_and_schedule_delete(update, context, "🚫 You have been blocked due to multiple incorrect attempts. Contact admin @SanchezC137Media.")
-        return
-
-    # If the license key was already used by another user, block the current user
+    # Check if the license key has already been used by a different user
     if license_key in verification_codes and verification_codes[license_key] != user_id:
         blocked_users.add(user_id)
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. Contact admin @SanchezC137Media.")
         return
 
-    processing_users.add(user_id)
+    # Check if the user is already in the group
+    if await is_user_in_group(user_id, context):
+        friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
+        await send_and_schedule_delete(update, context, friendly_message)
+        return
+
+    # Proceed with license verification
     try:
         if not LICENSE_CHECK_URL:
             await update.message.reply_text("⚠️ Internal error. Please contact support.")
@@ -222,7 +216,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         processing_users.discard(user_id)
 
-# ─── Administrative Commands ─────────────────────────────────────────────
+# --- Administrative Commands ---
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to block a user by username."""
     if update.effective_user.id != int(ADMIN_USER_ID):
@@ -278,10 +272,10 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         message += f"@{username} (ID: {user_id})\n"
     await update.message.reply_text(message)
 
-# ─── Global Dictionary for Manual Blocked Users (persisted) ─────────────
+# --- Global Dictionary for Manual Blocked Users (persisted) ---
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
-# ─── Handler Registration ─────────────────────────────────────────────────
+# --- Handler Registration ---
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -294,8 +288,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
 
-    # Run polling with optimized parameters: 
-    # timeout=60 uses long polling, poll_interval=1.0 sec waits between calls when idle.
+    # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
