@@ -15,7 +15,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
     CallbackContext,
-    JobQueue
 )
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
@@ -42,22 +41,30 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+logger.info("✅ Bot successfully initialized with environment variables.")
+
+# File names for persistence
+LICENSE_STORAGE_FILE = "used_licenses.json"
+ATTEMPTS_STORAGE_FILE = "user_attempts.json"
+BLOCKED_USERS_FILE = "blocked_users.json"           # Persist automatic blocked user IDs (stored as list)
+BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Persist manual blocked users (username: user_id)
 
 # ✅ Global variables
-failed_attempts = {}
-blocked_users = set()              # Set of user IDs automatically blocked (por intentos fallidos)
-blocked_users_dict = {}            # Diccionario de bloqueo manual {username: user_id}
+failed_attempts = {}           # Para bloqueo automático por intentos fallidos
+# Load blocked users as a set (if file is empty, use empty list, then convert to set)
+blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
+# Load manual blocked users dictionary
+blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 processing_users = set()
 verification_codes = {}
 MAX_RETRIES = 3
 MAX_FAILED_ATTEMPTS = 5
-DELETE_AFTER_SECONDS = 600  # 10 minutes
+DELETE_AFTER_SECONDS = 600     # 10 minutes
 
 # ✅ Configure a requests session with TLSAdapter if needed
 session = requests.Session()
 if LICENSE_CHECK_URL.startswith("https://"):
     class TLSAdapter(HTTPAdapter):
-        """Forzar compatibilidad con TLS"""
         def init_poolmanager(self, *args, **kwargs):
             context = create_urllib3_context()
             context.set_ciphers("DEFAULT@SECLEVEL=1")  # Reduce security for compatibility
@@ -66,6 +73,25 @@ if LICENSE_CHECK_URL.startswith("https://"):
     session.mount("https://", TLSAdapter())
 else:
     session.mount("http://", HTTPAdapter())
+
+def load_json_data(file_path):
+    """Safely loads JSON data from file."""
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r") as file:
+                return json.load(file)
+        except (json.JSONDecodeError, IOError):
+            logger.warning(f"⚠️ Warning: Could not load {file_path}, using default empty dictionary.")
+            return {}
+    return {}
+
+def save_json_data(file_path, data):
+    """Saves JSON data to file with indentation."""
+    try:
+        with open(file_path, "w") as file:
+            json.dump(data, file, indent=4)
+    except IOError as e:
+        logger.error(f"⚠️ Error saving data to {file_path}: {e}")
 
 def escape_markdown(text):
     """Escapes special characters for MarkdownV2 formatting."""
@@ -82,10 +108,11 @@ async def is_user_in_group(user_id, context: ContextTypes.DEFAULT_TYPE):
         return False
 
 async def generate_invite_link(context: ContextTypes.DEFAULT_TYPE):
-    """Generates an invite link with retries."""
+    """Generates an invite link with retries.
+    The link will expire 12 seconds after generation."""
     for attempt in range(MAX_RETRIES):
         try:
-            # Using the original approach without extra parameters that may cause errors
+            # Use original approach without extra parameters that may cause errors
             invite_link = await context.bot.create_chat_invite_link(
                 GROUP_CHAT_ID,
                 expire_date=int(time.time() + 12)
@@ -127,7 +154,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # Reject if the user is blocked (by automatic blocking)
+    # If the user is blocked automatically
     if user_id in blocked_users:
         await send_and_schedule_delete(update, context, "🚫 You have been blocked due to multiple incorrect attempts. Contact admin @SanchezC137Media.")
         return
@@ -135,6 +162,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # If the license key was already used by another user, block the current user
     if license_key in verification_codes and verification_codes[license_key] != user_id:
         blocked_users.add(user_id)
+        save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. Contact admin @SanchezC137Media.")
         return
 
@@ -152,7 +180,8 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Compare status case-insensitively
         if response_data.get("status", "").lower() == "valid":
             if await is_user_in_group(user_id, context):
-                await send_and_schedule_delete(update, context, "✅ You are already a member of the group. No invite needed.")
+                friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
+                await send_and_schedule_delete(update, context, friendly_message)
                 return
 
             invite_link = await generate_invite_link(context)
@@ -167,6 +196,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed_attempts[user_id] = failed_attempts.get(user_id, 0) + 1
             if failed_attempts[user_id] >= MAX_FAILED_ATTEMPTS:
                 blocked_users.add(user_id)
+                save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
                 await send_and_schedule_delete(update, context, "🚫 Blocked due to multiple incorrect attempts. Contact admin @SanchezC137Media.")
             else:
                 attempts_left = MAX_FAILED_ATTEMPTS - failed_attempts[user_id]
@@ -177,7 +207,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         processing_users.discard(user_id)
 
-# ─── Comandos administrativos ───────────────────────────────────────────────
+# ─── Administrative Commands ───────────────────────────────────────────────
 
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to block a user by username."""
@@ -189,11 +219,13 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     username = context.args[0].lstrip('@')
     try:
-        # Get chat info by username to obtain user ID
         chat = await context.bot.get_chat(username)
         user_id = chat.id
         blocked_users.add(user_id)
         blocked_users_dict[username] = user_id
+        # Persist changes
+        save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
+        save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
         await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been blocked.")
     except Exception as e:
         await update.message.reply_text(f"❌ Could not block user @{username}. Error: {str(e)}")
@@ -214,6 +246,9 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = blocked_users_dict.pop(username)
         if user_id in blocked_users:
             blocked_users.remove(user_id)
+        # Persist changes
+        save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
+        save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
         await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been unblocked.")
     except Exception as e:
         await update.message.reply_text(f"❌ Could not unblock user @{username}. Error: {str(e)}")
@@ -231,23 +266,29 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         message += f"@{username} (ID: {user_id})\n"
     await update.message.reply_text(message)
 
-# Global dictionary for manual blocked users (by username)
-blocked_users_dict = {}
+# Global dictionary for manual blocked users (persisted)
+blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
-# ─── Registro de handlers ─────────────────────────────────────────────────────
+# ─── Handler Registration ─────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # Build the bot application
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Register regular handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license))
 
-    # Register admin command handlers
+    # Register administrative command handlers
     application.add_handler(CommandHandler("block", admin_block))
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
 
-    # Run polling directly (this avoids issues with nested event loops)
-    application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
+    # Run polling with parameters optimized for efficiency:
+    # - timeout=60: long polling para reducir llamadas.
+    # - poll_interval=1.0: espera 1 segundo entre solicitudes cuando no hay actualizaciones.
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+        timeout=60,
+        poll_interval=1.0
+    )
