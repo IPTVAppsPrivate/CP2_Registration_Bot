@@ -66,8 +66,8 @@ def save_json_data(file_path, data):
 # --- File Names for Persistence ---
 LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
-BLOCKED_USERS_FILE = "blocked_users.json"           # Automatic blocked user IDs (stored as list)
-BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Manual blocked users (username: user_id)
+BLOCKED_USERS_FILE = "blocked_users.json"           # For automatic blocked user IDs (stored as list)
+BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # For manual blocked users (username: user_id)
 
 # --- Global Variables Initialization ---
 failed_attempts = {}
@@ -75,13 +75,13 @@ blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 processing_users = set()
 verification_codes = {}
-# Rate limiting: max 5 attempts per minute per user
+# Rate limiting: maximum 5 attempts per minute per user
 RATE_LIMIT = 5
 attempt_timestamps = {}  # user_id -> list of timestamp floats
 MAX_RETRIES = 3
 MAX_FAILED_ATTEMPTS = 5
 DELETE_AFTER_SECONDS = 120  # 2 minutes
-# Set of users whose session has ended (no further responses)
+# Set of users whose session is terminated (no further responses)
 session_ended = set()
 
 # --- Configure a Requests Session with TLSAdapter if needed ---
@@ -147,8 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     if user_id in session_ended:
-        # If session ended, do not respond further.
-        return
+        return  # No further response if session is ended
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
@@ -162,7 +161,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # If session ended, do not respond
+    # If the session is terminated, do not respond further.
     if user_id in session_ended:
         return
 
@@ -176,7 +175,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attempt_timestamps[user_id].append(now)
     # --------------------------------------------------------------------
 
-    # --- Call API to validate license ---
+    # --- Validate license via API ---
     try:
         if not LICENSE_CHECK_URL:
             await update.message.reply_text("⚠️ Internal error. Please contact support.")
@@ -193,7 +192,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- If license is valid ---
     if response_data.get("status", "").lower() == "valid":
-        # Now check if the license was already used by another user
+        # Check if license already used by another user
         if license_key in verification_codes and verification_codes[license_key] != user_id:
             blocked_users.add(user_id)
             save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
@@ -202,7 +201,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 session_ended.add(user_id)
             return
 
-        # Check if the user is already in the group
+        # Check if user is already in the group (should be caught in /start, but por seguridad)
         if await is_user_in_group(user_id, context):
             friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
             if license_key and license_key not in verification_codes:
@@ -211,12 +210,13 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_schedule_delete(update, context, friendly_message)
             return
 
-        # Proceed to generate invite link
+        # Proceed to generate invite link with hidden spoiler formatting
         invite_link = await generate_invite_link(context)
         if invite_link:
-            success_message = escape_markdown(f"✅ Your license key has been verified!\n\nHere is your invite link to the group: [Join Group]({invite_link})")
-            await send_and_schedule_delete(update, context, success_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
+            success_message = f"✅ Your license key has been verified!\n\nHere is your invite link to the group: <tg-spoiler><a href=\"{invite_link}\">Join Group</a></tg-spoiler>"
+            await send_and_schedule_delete(update, context, success_message, parse_mode=constants.ParseMode.HTML)
             verification_codes[license_key] = user_id
+            save_json_data(LICENSE_STORAGE_FILE, verification_codes)
             failed_attempts.pop(user_id, None)
         else:
             await send_and_schedule_delete(update, context, "⚠️ Unable to generate invite link. Contact admin.")
@@ -306,7 +306,7 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
 
-    # Run polling with optimized parameters: long polling (timeout=60) and poll_interval=1.0 seconds.
+    # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
