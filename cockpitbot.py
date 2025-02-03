@@ -18,9 +18,9 @@ from telegram.ext import (
 )
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
-
-# --- Apply nest_asyncio to allow nested event loops ---
 import nest_asyncio
+
+# Apply nest_asyncio to allow nested event loops
 nest_asyncio.apply()
 
 # --- Load environment variables ---
@@ -143,14 +143,24 @@ async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT
     sent_message = await update.message.reply_text(text, parse_mode=parse_mode)
     context.job_queue.run_once(delete_message, DELETE_AFTER_SECONDS, data=(update.message.chat_id, sent_message.message_id))
 
+# --- Function to dynamically reload block lists ---
+async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
+    """Reloads blocked users from the persistence files."""
+    global blocked_users, blocked_users_dict
+    new_blocked = set(load_json_data(BLOCKED_USERS_FILE) or [])
+    new_blocked_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
+    blocked_users = new_blocked
+    blocked_users_dict = new_blocked_dict
+    logger.info("Blocked users reloaded from file.")
+
 # --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command. Processes only private chats."""
     if update.message.chat.type != "private":
-        return  # Do not process messages from groups
+        return
     user_id = update.effective_user.id
     if user_id in session_ended:
-        return  # No response if session is terminated
+        return
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
@@ -165,11 +175,10 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global failed_attempts, blocked_users, verification_codes, attempt_timestamps, session_ended
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
-
     if user_id in session_ended:
-        return  # Do not respond if session is terminated
+        return
 
-    # --- Rate Limiting: Allow max RATE_LIMIT attempts per minute ---
+    # Rate limiting: Allow max RATE_LIMIT attempts per minute
     now = time.time()
     attempt_timestamps.setdefault(user_id, [])
     attempt_timestamps[user_id] = [t for t in attempt_timestamps[user_id] if now - t < 60]
@@ -177,9 +186,8 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚫 Too many attempts per minute. Please wait a minute before trying again.")
         return
     attempt_timestamps[user_id].append(now)
-    # --------------------------------------------------------------------
 
-    # --- First, check if the user is already in the group ---
+    # Check if the user is already in the group
     if await is_user_in_group(user_id, context):
         friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
         if license_key and license_key not in verification_codes:
@@ -188,12 +196,11 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_schedule_delete(update, context, friendly_message)
         return
 
-    # --- Validate the license via API ---
+    # Validate the license via API
     try:
         if not LICENSE_CHECK_URL:
             await update.message.reply_text("⚠️ Internal error. Please contact support.")
             return
-
         response = session.post(LICENSE_CHECK_URL, data={"licensekey": license_key}, timeout=10)
         response.raise_for_status()
         response_data = response.json()
@@ -203,9 +210,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_and_schedule_delete(update, context, "⚠️ Error verifying license key. Please try again later.")
         return
 
-    # --- If license is valid ---
     if response_data.get("status", "").lower() == "valid":
-        # Check if the license is already used by a different user
         if license_key in verification_codes and verification_codes[license_key] != user_id:
             blocked_users.add(user_id)
             save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
@@ -214,7 +219,6 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 session_ended.add(user_id)
             return
 
-        # Proceed to generate invite link with spoiler formatting
         invite_link = await generate_invite_link(context)
         if invite_link:
             success_message = f"✅ Your license key has been verified!\n\nHere is your invite link to the group: <tg-spoiler><a href=\"{invite_link}\">Join Group</a></tg-spoiler>"
@@ -225,7 +229,6 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await send_and_schedule_delete(update, context, "⚠️ Unable to generate invite link. Contact admin.")
     else:
-        # --- If license is invalid ---
         failed_attempts[user_id] = failed_attempts.get(user_id, 0) + 1
         if failed_attempts[user_id] >= MAX_FAILED_ATTEMPTS:
             blocked_users.add(user_id)
@@ -327,8 +330,15 @@ async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
 
-# --- Global Dictionary for Manual Blocked Users (persisted) ---
-blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
+# --- Function to reload block list dynamically ---
+async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
+    """Reloads the blocked users from the persistence files and updates global variables."""
+    global blocked_users, blocked_users_dict
+    new_blocked = set(load_json_data(BLOCKED_USERS_FILE) or [])
+    new_blocked_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
+    blocked_users = new_blocked
+    blocked_users_dict = new_blocked_dict
+    logger.info("Blocked users reloaded from file.")
 
 # --- Set Commands Programmatically ---
 async def set_commands(bot):
@@ -347,6 +357,9 @@ async def main():
 
     # Set bot commands
     await set_commands(application.bot)
+
+    # Schedule periodic reloading of blocked users (every 60 seconds)
+    application.job_queue.run_repeating(reload_blocked_users, interval=60, first=10)
 
     # Register regular handlers (only process private chats)
     application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
