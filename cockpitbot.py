@@ -296,12 +296,53 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         message += f"@{username} (ID: {user_id})\n"
     await update.message.reply_text(message)
 
+async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows the admin to unblock a user by directly providing the user ID."""
+    if update.message.chat.type != "private":
+        return
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /unblockid <user_id>")
+        return
+    try:
+        target_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Invalid user ID format. It must be numeric.")
+        return
+    if target_id in blocked_users:
+        blocked_users.remove(target_id)
+        # Remove any entries in blocked_users_dict that have this user ID
+        keys_to_remove = [k for k, v in blocked_users_dict.items() if v == target_id]
+        for key in keys_to_remove:
+            del blocked_users_dict[key]
+        save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
+        save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
+        await update.message.reply_text(f"✅ User with ID {target_id} has been unblocked.")
+    else:
+        await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
+
 # --- Global Dictionary for Manual Blocked Users (persisted) ---
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
-# --- Handler Registration ---
-if __name__ == "__main__":
+# --- Set Commands Programmatically ---
+async def set_commands(bot):
+    commands = [
+        ("start", "Start the bot"),
+        ("block", "Block a user by username (admin only)"),
+        ("unblock", "Unblock a user by username (admin only)"),
+        ("blockuserslist", "List blocked users (admin only)"),
+        ("unblockid", "Unblock a user by ID (admin only)")
+    ]
+    await bot.set_my_commands(commands)
+
+# --- Main function to set commands and run the bot ---
+async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Set bot commands
+    await set_commands(application.bot)
 
     # Register regular handlers (only process private chats)
     application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
@@ -311,12 +352,24 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("block", admin_block, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("unblock", admin_unblock, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("unblockid", admin_unblockid, filters=filters.ChatType.PRIVATE))
 
     # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
-    application.run_polling(
+    await application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         timeout=60,
         poll_interval=1.0
     )
 
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        # Si el error indica que el event loop ya está corriendo, reutilízalo.
+        if "already running" in str(e):
+            loop = asyncio.get_event_loop()
+            loop.create_task(main())
+            loop.run_forever()
+        else:
+            raise e
