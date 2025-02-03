@@ -66,8 +66,8 @@ def save_json_data(file_path, data):
 # --- File Names for Persistence ---
 LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
-BLOCKED_USERS_FILE = "blocked_users.json"           # Automatic blocked user IDs (stored as list)
-BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Manual blocked users (username: user_id)
+BLOCKED_USERS_FILE = "blocked_users.json"           # For automatic blocked user IDs (stored as list)
+BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # For manual blocked users (username: user_id)
 
 # --- Global Variables Initialization ---
 failed_attempts = {}
@@ -141,13 +141,12 @@ async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT
 
 # --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles the /start command."""
+    """Handles the /start command. Processes only private chats."""
     if update.message.chat.type != "private":
-        logger.info(f"Ignored /start from chat ID: {update.message.chat_id}")
-        return
+        return  # Do not process messages from groups
     user_id = update.effective_user.id
     if user_id in session_ended:
-        return  # No response if session has ended
+        return  # No response if session is terminated
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
@@ -156,14 +155,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_and_schedule_delete(update, context, welcome_message)
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles license key verification and invite link generation."""
+    """Handles license key verification and invite link generation. Processes only private chats."""
+    if update.message.chat.type != "private":
+        return
     global failed_attempts, blocked_users, verification_codes, attempt_timestamps, session_ended
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # If the session is terminated, do not respond
     if user_id in session_ended:
-        return
+        return  # Do not respond further if session is terminated
 
     # --- Rate Limiting: Allow max RATE_LIMIT attempts per minute ---
     now = time.time()
@@ -175,10 +175,9 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attempt_timestamps[user_id].append(now)
     # --------------------------------------------------------------------
 
-    # --- First: Check if user is already in the group ---
+    # --- First, check if the user is already in the group ---
     if await is_user_in_group(user_id, context):
         friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
-        # If a license was sent and not yet recorded, save it to prevent reuse.
         if license_key and license_key not in verification_codes:
             verification_codes[license_key] = user_id
             save_json_data(LICENSE_STORAGE_FILE, verification_codes)
@@ -202,7 +201,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- If license is valid ---
     if response_data.get("status", "").lower() == "valid":
-        # Check if the license is already used by another user
+        # Check if the license is already used by a different user
         if license_key in verification_codes and verification_codes[license_key] != user_id:
             blocked_users.add(user_id)
             save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
@@ -235,9 +234,11 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_schedule_delete(update, context, f"❌ Invalid license key. Please try again. You have {attempts_left} attempts left.")
     processing_users.discard(user_id)
 
-# --- Administrative Commands ---
+# --- Administrative Commands (process only in private chats) ---
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to block a user by username."""
+    if update.message.chat.type != "private":
+        return
     if update.effective_user.id != int(ADMIN_USER_ID):
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
@@ -258,6 +259,8 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to unblock a user by username."""
+    if update.message.chat.type != "private":
+        return
     if update.effective_user.id != int(ADMIN_USER_ID):
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
@@ -280,6 +283,8 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lists all blocked users (by username and ID) for the admin."""
+    if update.message.chat.type != "private":
+        return
     if update.effective_user.id != int(ADMIN_USER_ID):
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
@@ -298,11 +303,11 @@ blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register regular handlers
+    # Register regular handlers (only in private chats)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license))
 
-    # Register administrative command handlers
+    # Register administrative command handlers (only in private chats)
     application.add_handler(CommandHandler("block", admin_block))
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
