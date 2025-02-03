@@ -145,7 +145,7 @@ async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT
 
 # --- Function to dynamically reload block lists ---
 async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
-    """Reloads blocked users from the persistence files."""
+    """Reloads the blocked users from the persistence files."""
     global blocked_users, blocked_users_dict
     new_blocked = set(load_json_data(BLOCKED_USERS_FILE) or [])
     new_blocked_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
@@ -157,10 +157,10 @@ async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command. Processes only private chats."""
     if update.message.chat.type != "private":
-        return
+        return  # Do not process messages from groups
     user_id = update.effective_user.id
     if user_id in session_ended:
-        return
+        return  # No response if session is terminated
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
@@ -242,6 +242,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     processing_users.discard(user_id)
 
 # --- Administrative Commands (only process in private chats) ---
+
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to block a user by username."""
     if update.message.chat.type != "private":
@@ -326,19 +327,14 @@ async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del blocked_users_dict[key]
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
+        # Also remove the user from the terminated session set to allow future interactions
+        session_ended.discard(target_id)
         await update.message.reply_text(f"✅ User with ID {target_id} has been unblocked.")
     else:
         await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
 
-# --- Function to reload block list dynamically ---
-async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
-    """Reloads the blocked users from the persistence files and updates global variables."""
-    global blocked_users, blocked_users_dict
-    new_blocked = set(load_json_data(BLOCKED_USERS_FILE) or [])
-    new_blocked_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
-    blocked_users = new_blocked
-    blocked_users_dict = new_blocked_dict
-    logger.info("Blocked users reloaded from file.")
+# --- Global Dictionary for Manual Blocked Users (persisted) ---
+blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
 # --- Set Commands Programmatically ---
 async def set_commands(bot):
