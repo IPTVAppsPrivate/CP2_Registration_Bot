@@ -145,12 +145,13 @@ async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT
 
 # --- Function to dynamically reload block lists ---
 async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
-    """Reloads the blocked users from the persistence files."""
-    global blocked_users, blocked_users_dict
+    global blocked_users, blocked_users_dict, session_ended
     new_blocked = set(load_json_data(BLOCKED_USERS_FILE) or [])
     new_blocked_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
     blocked_users = new_blocked
     blocked_users_dict = new_blocked_dict
+    # Remover de session_ended a aquellos usuarios que ya no están bloqueados.
+    session_ended = {uid for uid in session_ended if uid in blocked_users}
     logger.info("Blocked users reloaded from file.")
 
 # --- Bot Command Handlers ---
