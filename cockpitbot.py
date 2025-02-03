@@ -309,12 +309,12 @@ async def set_commands(bot):
     ]
     await bot.set_my_commands(commands)
 
-# --- Handler Registration ---
-if __name__ == "__main__":
+# --- Main function to set commands and run the bot ---
+async def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Configure the bot's command list programmatically.
-    application.bot.loop.run_until_complete(set_commands(application.bot))
+    # Set bot commands
+    await set_commands(application.bot)
 
     # Register regular handlers (only process private chats)
     application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
@@ -326,9 +326,12 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
 
     # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
-    application.run_polling(
+    await application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         timeout=60,
         poll_interval=1.0
     )
+
+if __name__ == "__main__":
+    asyncio.run(main())
