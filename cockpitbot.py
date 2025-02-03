@@ -66,8 +66,8 @@ def save_json_data(file_path, data):
 # --- File Names for Persistence ---
 LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
-BLOCKED_USERS_FILE = "blocked_users.json"           # For automatic blocked user IDs (stored as list)
-BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # For manual blocked users (username: user_id)
+BLOCKED_USERS_FILE = "blocked_users.json"           # Automatic blocked user IDs (stored as list)
+BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Manual blocked users (username: user_id)
 
 # --- Global Variables Initialization ---
 failed_attempts = {}
@@ -147,7 +147,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     if user_id in session_ended:
-        return  # No further response if session is ended
+        return  # No response if session has ended
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
@@ -161,7 +161,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # If the session is terminated, do not respond further.
+    # If the session is terminated, do not respond
     if user_id in session_ended:
         return
 
@@ -175,7 +175,17 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     attempt_timestamps[user_id].append(now)
     # --------------------------------------------------------------------
 
-    # --- Validate license via API ---
+    # --- First: Check if user is already in the group ---
+    if await is_user_in_group(user_id, context):
+        friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
+        # If a license was sent and not yet recorded, save it to prevent reuse.
+        if license_key and license_key not in verification_codes:
+            verification_codes[license_key] = user_id
+            save_json_data(LICENSE_STORAGE_FILE, verification_codes)
+        await send_and_schedule_delete(update, context, friendly_message)
+        return
+
+    # --- Validate the license via API ---
     try:
         if not LICENSE_CHECK_URL:
             await update.message.reply_text("⚠️ Internal error. Please contact support.")
@@ -192,7 +202,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- If license is valid ---
     if response_data.get("status", "").lower() == "valid":
-        # Check if license already used by another user
+        # Check if the license is already used by another user
         if license_key in verification_codes and verification_codes[license_key] != user_id:
             blocked_users.add(user_id)
             save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
@@ -201,16 +211,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 session_ended.add(user_id)
             return
 
-        # Check if user is already in the group (should be caught in /start, but por seguridad)
-        if await is_user_in_group(user_id, context):
-            friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
-            if license_key and license_key not in verification_codes:
-                verification_codes[license_key] = user_id
-                save_json_data(LICENSE_STORAGE_FILE, verification_codes)
-            await send_and_schedule_delete(update, context, friendly_message)
-            return
-
-        # Proceed to generate invite link with hidden spoiler formatting
+        # Proceed to generate invite link with spoiler formatting
         invite_link = await generate_invite_link(context)
         if invite_link:
             success_message = f"✅ Your license key has been verified!\n\nHere is your invite link to the group: <tg-spoiler><a href=\"{invite_link}\">Join Group</a></tg-spoiler>"
