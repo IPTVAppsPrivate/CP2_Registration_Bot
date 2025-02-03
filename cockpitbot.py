@@ -43,39 +43,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("✅ Bot successfully initialized with environment variables.")
 
-# File names for persistence
-LICENSE_STORAGE_FILE = "used_licenses.json"
-ATTEMPTS_STORAGE_FILE = "user_attempts.json"
-BLOCKED_USERS_FILE = "blocked_users.json"           # Persist automatic blocked user IDs (stored as list)
-BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Persist manual blocked users (username: user_id)
-
-# ✅ Global variables
-failed_attempts = {}           # Para bloqueo automático por intentos fallidos
-# Load blocked users as a set (if file is empty, use empty list, then convert to set)
-blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
-# Load manual blocked users dictionary
-blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
-processing_users = set()
-verification_codes = {}
-MAX_RETRIES = 3
-MAX_FAILED_ATTEMPTS = 5
-DELETE_AFTER_SECONDS = 600     # 10 minutes
-
-# ✅ Configure a requests session with TLSAdapter if needed
-session = requests.Session()
-if LICENSE_CHECK_URL.startswith("https://"):
-    class TLSAdapter(HTTPAdapter):
-        def init_poolmanager(self, *args, **kwargs):
-            context = create_urllib3_context()
-            context.set_ciphers("DEFAULT@SECLEVEL=1")  # Reduce security for compatibility
-            kwargs["ssl_context"] = context
-            super().init_poolmanager(*args, **kwargs)
-    session.mount("https://", TLSAdapter())
-else:
-    session.mount("http://", HTTPAdapter())
-
+# ─── Persistence Functions ─────────────────────────────────────────────
 def load_json_data(file_path):
-    """Safely loads JSON data from file."""
+    """Safely loads JSON data from a file."""
     if os.path.exists(file_path):
         try:
             with open(file_path, "r") as file:
@@ -86,18 +56,49 @@ def load_json_data(file_path):
     return {}
 
 def save_json_data(file_path, data):
-    """Saves JSON data to file with indentation."""
+    """Saves data as JSON to a file."""
     try:
         with open(file_path, "w") as file:
             json.dump(data, file, indent=4)
     except IOError as e:
         logger.error(f"⚠️ Error saving data to {file_path}: {e}")
 
+# ─── File Names for Persistence ─────────────────────────────────────────
+LICENSE_STORAGE_FILE = "used_licenses.json"
+ATTEMPTS_STORAGE_FILE = "user_attempts.json"
+BLOCKED_USERS_FILE = "blocked_users.json"           # For automatic blocked user IDs (stored as list)
+BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # For manual blocked users (username: user_id)
+
+# ─── Global Variables Initialization ─────────────────────────────────────
+failed_attempts = {}           
+blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
+blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
+processing_users = set()
+verification_codes = {}
+MAX_RETRIES = 3
+MAX_FAILED_ATTEMPTS = 5
+DELETE_AFTER_SECONDS = 600     # 10 minutes
+
+# ─── Configure Requests Session ───────────────────────────────────────────
+session = requests.Session()
+if LICENSE_CHECK_URL.startswith("https://"):
+    class TLSAdapter(HTTPAdapter):
+        """Forces TLS compatibility with reduced security."""
+        def init_poolmanager(self, *args, **kwargs):
+            context = create_urllib3_context()
+            context.set_ciphers("DEFAULT@SECLEVEL=1")
+            kwargs["ssl_context"] = context
+            super().init_poolmanager(*args, **kwargs)
+    session.mount("https://", TLSAdapter())
+else:
+    session.mount("http://", HTTPAdapter())
+
 def escape_markdown(text):
-    """Escapes special characters for MarkdownV2 formatting."""
+    """Escapes special characters for MarkdownV2."""
     escape_chars = r'_*[\]()~`>#+-=|{}.!'
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
 
+# ─── Helper Functions ─────────────────────────────────────────────────────
 async def is_user_in_group(user_id, context: ContextTypes.DEFAULT_TYPE):
     """Checks if the user is already in the group."""
     try:
@@ -108,11 +109,9 @@ async def is_user_in_group(user_id, context: ContextTypes.DEFAULT_TYPE):
         return False
 
 async def generate_invite_link(context: ContextTypes.DEFAULT_TYPE):
-    """Generates an invite link with retries.
-    The link will expire 12 seconds after generation."""
+    """Generates an invite link that expires 12 seconds after generation."""
     for attempt in range(MAX_RETRIES):
         try:
-            # Use original approach without extra parameters that may cause errors
             invite_link = await context.bot.create_chat_invite_link(
                 GROUP_CHAT_ID,
                 expire_date=int(time.time() + 12)
@@ -124,7 +123,7 @@ async def generate_invite_link(context: ContextTypes.DEFAULT_TYPE):
     return None
 
 async def delete_message(context: CallbackContext):
-    """Deletes a message after a specified time."""
+    """Deletes a message after a set time."""
     chat_id, message_id = context.job.data
     try:
         await context.bot.delete_message(chat_id, message_id)
@@ -132,10 +131,11 @@ async def delete_message(context: CallbackContext):
         logger.error(f"Failed to delete message {message_id}: {e}")
 
 async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, parse_mode=None):
-    """Sends a message and schedules it for deletion after DELETE_AFTER_SECONDS."""
+    """Sends a message and schedules its deletion after DELETE_AFTER_SECONDS."""
     sent_message = await update.message.reply_text(text, parse_mode=parse_mode)
     context.job_queue.run_once(delete_message, DELETE_AFTER_SECONDS, data=(update.message.chat_id, sent_message.message_id))
 
+# ─── Bot Command Handlers ──────────────────────────────────────────────────
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
     if update.message.chat.type != "private":
@@ -153,6 +153,12 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global failed_attempts, blocked_users, verification_codes
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
+
+    # Check if the user is already in the group regardless of the license entered
+    if await is_user_in_group(user_id, context):
+        friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
+        await send_and_schedule_delete(update, context, friendly_message)
+        return
 
     # If the user is blocked automatically
     if user_id in blocked_users:
@@ -179,11 +185,6 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         # Compare status case-insensitively
         if response_data.get("status", "").lower() == "valid":
-            if await is_user_in_group(user_id, context):
-                friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
-                await send_and_schedule_delete(update, context, friendly_message)
-                return
-
             invite_link = await generate_invite_link(context)
             if invite_link:
                 success_message = escape_markdown(f"✅ Your license key has been verified!\n\nHere is your invite link to the group: [Join Group]({invite_link})")
@@ -207,8 +208,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         processing_users.discard(user_id)
 
-# ─── Administrative Commands ───────────────────────────────────────────────
-
+# ─── Administrative Commands ─────────────────────────────────────────────
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to block a user by username."""
     if update.effective_user.id != int(ADMIN_USER_ID):
@@ -223,7 +223,6 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = chat.id
         blocked_users.add(user_id)
         blocked_users_dict[username] = user_id
-        # Persist changes
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
         await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been blocked.")
@@ -246,7 +245,6 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = blocked_users_dict.pop(username)
         if user_id in blocked_users:
             blocked_users.remove(user_id)
-        # Persist changes
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
         await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been unblocked.")
@@ -266,11 +264,10 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         message += f"@{username} (ID: {user_id})\n"
     await update.message.reply_text(message)
 
-# Global dictionary for manual blocked users (persisted)
+# ─── Global dictionary for manual blocked users (persisted) ─────────────
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
-# ─── Handler Registration ─────────────────────────────────────────────────────
-
+# ─── Handler Registration ─────────────────────────────────────────────────
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
@@ -283,9 +280,9 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
 
-    # Run polling with parameters optimized for efficiency:
-    # - timeout=60: long polling para reducir llamadas.
-    # - poll_interval=1.0: espera 1 segundo entre solicitudes cuando no hay actualizaciones.
+    # Run polling with optimized parameters:
+    # timeout=60 uses long polling to reduce API calls,
+    # poll_interval=1.0 sec waits between requests when idle.
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
