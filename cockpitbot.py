@@ -45,7 +45,8 @@ logger = logging.getLogger(__name__)
 
 # ✅ Global variables
 failed_attempts = {}
-blocked_users = set()
+blocked_users = set()              # Set of user IDs automatically blocked (por intentos fallidos)
+blocked_users_dict = {}            # Diccionario de bloqueo manual {username: user_id}
 processing_users = set()
 verification_codes = {}
 MAX_RETRIES = 3
@@ -56,6 +57,7 @@ DELETE_AFTER_SECONDS = 600  # 10 minutes
 session = requests.Session()
 if LICENSE_CHECK_URL.startswith("https://"):
     class TLSAdapter(HTTPAdapter):
+        """Forzar compatibilidad con TLS"""
         def init_poolmanager(self, *args, **kwargs):
             context = create_urllib3_context()
             context.set_ciphers("DEFAULT@SECLEVEL=1")  # Reduce security for compatibility
@@ -67,7 +69,7 @@ else:
 
 def escape_markdown(text):
     """Escapes special characters for MarkdownV2 formatting."""
-    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    escape_chars = r'_*[\]()~`>#+-=|{}.!'
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
 
 async def is_user_in_group(user_id, context: ContextTypes.DEFAULT_TYPE):
@@ -125,12 +127,12 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # Reject if the user is blocked
+    # Reject if the user is blocked (by automatic blocking)
     if user_id in blocked_users:
         await send_and_schedule_delete(update, context, "🚫 You have been blocked due to multiple incorrect attempts. Contact admin @SanchezC137Media.")
         return
 
-    # If the license key was already used by another user, block current user
+    # If the license key was already used by another user, block the current user
     if license_key in verification_codes and verification_codes[license_key] != user_id:
         blocked_users.add(user_id)
         await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. Contact admin @SanchezC137Media.")
@@ -155,7 +157,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             invite_link = await generate_invite_link(context)
             if invite_link:
-                success_message = escape_markdown(f"✅ License verified. [Join Group]({invite_link})")
+                success_message = escape_markdown(f"✅ Your license key has been verified!\n\nHere is your invite link to the group: [Join Group]({invite_link})")
                 await send_and_schedule_delete(update, context, success_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
                 verification_codes[license_key] = user_id
                 failed_attempts.pop(user_id, None)
@@ -175,13 +177,77 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     finally:
         processing_users.discard(user_id)
 
+# ─── Comandos administrativos ───────────────────────────────────────────────
+
+async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows the admin to block a user by username."""
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /block <username>")
+        return
+    username = context.args[0].lstrip('@')
+    try:
+        # Get chat info by username to obtain user ID
+        chat = await context.bot.get_chat(username)
+        user_id = chat.id
+        blocked_users.add(user_id)
+        blocked_users_dict[username] = user_id
+        await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been blocked.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not block user @{username}. Error: {str(e)}")
+
+async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Allows the admin to unblock a user by username."""
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /unblock <username>")
+        return
+    username = context.args[0].lstrip('@')
+    try:
+        if username not in blocked_users_dict:
+            await update.message.reply_text(f"❌ User @{username} is not blocked.")
+            return
+        user_id = blocked_users_dict.pop(username)
+        if user_id in blocked_users:
+            blocked_users.remove(user_id)
+        await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been unblocked.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Could not unblock user @{username}. Error: {str(e)}")
+
+async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lists all blocked users (by username and ID) for the admin."""
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    if not blocked_users_dict:
+        await update.message.reply_text("✅ There are no blocked users.")
+        return
+    message = "🚫 Blocked Users:\n"
+    for username, user_id in blocked_users_dict.items():
+        message += f"@{username} (ID: {user_id})\n"
+    await update.message.reply_text(message)
+
+# Global dictionary for manual blocked users (by username)
+blocked_users_dict = {}
+
+# ─── Registro de handlers ─────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     # Build the bot application
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register handlers
+    # Register regular handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license))
 
-    # Run polling directly (using run_polling avoids issues with nested event loops)
+    # Register admin command handlers
+    application.add_handler(CommandHandler("block", admin_block))
+    application.add_handler(CommandHandler("unblock", admin_unblock))
+    application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
+
+    # Run polling directly (this avoids issues with nested event loops)
     application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
