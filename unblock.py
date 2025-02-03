@@ -22,7 +22,11 @@ if len(sys.argv) < 2:
     print("Usage: python unblock.py <user_id>")
     sys.exit(1)
 
-user_id = sys.argv[1]
+try:
+    user_id = int(sys.argv[1])
+except ValueError:
+    print("User ID must be numeric.")
+    sys.exit(1)
 
 blocked = load_json_data(BLOCKED_USERS_FILE)
 if user_id in blocked:
