@@ -334,4 +334,13 @@ async def main():
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        # Si el error indica que el event loop ya está corriendo, reutiliza el loop existente.
+        if "already running" in str(e):
+            loop = asyncio.get_event_loop()
+            loop.create_task(main())
+            loop.run_forever()
+        else:
+            raise e
