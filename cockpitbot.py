@@ -66,8 +66,8 @@ def save_json_data(file_path, data):
 # --- File Names for Persistence ---
 LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
-BLOCKED_USERS_FILE = "blocked_users.json"           # For automatic blocked user IDs (stored as list)
-BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # For manual blocked users (username: user_id)
+BLOCKED_USERS_FILE = "blocked_users.json"           # Automatic blocked user IDs (stored as list)
+BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Manual blocked users (username: user_id)
 
 # --- Global Variables Initialization ---
 failed_attempts = {}
@@ -163,7 +163,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     license_key = update.message.text.strip()
 
     if user_id in session_ended:
-        return  # Do not respond further if session is terminated
+        return  # Do not respond if session is terminated
 
     # --- Rate Limiting: Allow max RATE_LIMIT attempts per minute ---
     now = time.time()
@@ -234,7 +234,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await send_and_schedule_delete(update, context, f"❌ Invalid license key. Please try again. You have {attempts_left} attempts left.")
     processing_users.discard(user_id)
 
-# --- Administrative Commands (process only in private chats) ---
+# --- Administrative Commands (only process in private chats) ---
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows the admin to block a user by username."""
     if update.message.chat.type != "private":
@@ -303,14 +303,14 @@ blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register regular handlers (only in private chats)
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_license))
+    # Register regular handlers (only process private chats)
+    application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_license))
 
-    # Register administrative command handlers (only in private chats)
-    application.add_handler(CommandHandler("block", admin_block))
-    application.add_handler(CommandHandler("unblock", admin_unblock))
-    application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
+    # Register administrative command handlers (only process private chats)
+    application.add_handler(CommandHandler("block", admin_block, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("unblock", admin_unblock, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
 
     # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
     application.run_polling(
