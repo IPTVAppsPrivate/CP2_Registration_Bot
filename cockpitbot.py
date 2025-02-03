@@ -19,7 +19,7 @@ from telegram.ext import (
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
 
-# ✅ Load environment variables
+# --- Load environment variables (ensure sensitive tokens/keys are stored securely) ---
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -27,15 +27,15 @@ GROUP_CHAT_ID = os.getenv("GROUP_CHAT_ID")
 LICENSE_CHECK_URL = os.getenv("LICENSE_CHECK_URL")
 ADMIN_USER_ID = os.getenv("ADMIN_USER_ID")
 
-# ✅ Force HTTP if LICENSE_CHECK_URL starts with HTTPS (for compatibility)
+# --- Force HTTP if LICENSE_CHECK_URL starts with HTTPS (for compatibility) ---
 if LICENSE_CHECK_URL.startswith("https://"):
     LICENSE_CHECK_URL = LICENSE_CHECK_URL.replace("https://", "http://")
 
-# ✅ Validate that required variables are present
+# --- Validate required variables ---
 if not BOT_TOKEN or not GROUP_CHAT_ID or not LICENSE_CHECK_URL or not ADMIN_USER_ID:
     raise ValueError("🚨 ERROR: Missing environment variables in the .env file")
 
-# ✅ Configure logging
+# --- Configure logging ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -43,7 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.info("✅ Bot successfully initialized with environment variables.")
 
-# ─── Persistence Functions ─────────────────────────────────────────────
+# --- Persistence Functions ---
 def load_json_data(file_path):
     """Safely loads JSON data from a file."""
     if os.path.exists(file_path):
@@ -63,23 +63,26 @@ def save_json_data(file_path, data):
     except IOError as e:
         logger.error(f"⚠️ Error saving data to {file_path}: {e}")
 
-# ─── File Names for Persistence ─────────────────────────────────────────
+# --- File Names for Persistence ---
 LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
 BLOCKED_USERS_FILE = "blocked_users.json"           # For automatic blocked user IDs (stored as list)
 BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # For manual blocked users (username: user_id)
 
-# ─── Global Variables Initialization ─────────────────────────────────────
+# --- Global Variables Initialization ---
 failed_attempts = {}           
 blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 processing_users = set()
 verification_codes = {}
+# Rate limiting: maximum allowed attempts per minute per user
+RATE_LIMIT = 5
+attempt_timestamps = {}  # dictionary: user_id -> list of timestamps (float)
 MAX_RETRIES = 3
 MAX_FAILED_ATTEMPTS = 5
 DELETE_AFTER_SECONDS = 600     # 10 minutes
 
-# ─── Configure Requests Session ───────────────────────────────────────────
+# --- Configure a Requests Session with TLSAdapter if needed ---
 session = requests.Session()
 if LICENSE_CHECK_URL.startswith("https://"):
     class TLSAdapter(HTTPAdapter):
@@ -98,7 +101,7 @@ def escape_markdown(text):
     escape_chars = r'_*[\]()~`>#+-=|{}.!'
     return re.sub(r'([{}])'.format(re.escape(escape_chars)), r'\\\1', text)
 
-# ─── Helper Functions ─────────────────────────────────────────────────────
+# --- Helper Functions ---
 async def is_user_in_group(user_id, context: ContextTypes.DEFAULT_TYPE):
     """Checks if the user is already in the group."""
     try:
@@ -135,7 +138,7 @@ async def send_and_schedule_delete(update: Update, context: ContextTypes.DEFAULT
     sent_message = await update.message.reply_text(text, parse_mode=parse_mode)
     context.job_queue.run_once(delete_message, DELETE_AFTER_SECONDS, data=(update.message.chat_id, sent_message.message_id))
 
-# ─── Bot Command Handlers ──────────────────────────────────────────────────
+# --- Bot Command Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command."""
     if update.message.chat.type != "private":
@@ -150,17 +153,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles license key verification and invite link generation."""
-    global failed_attempts, blocked_users, verification_codes
+    global failed_attempts, blocked_users, verification_codes, attempt_timestamps
     user_id = update.effective_user.id
     license_key = update.message.text.strip()
 
-    # Check if the user is already in the group regardless of the license entered
+    # --- Rate Limiting: allow maximum RATE_LIMIT attempts per minute ---
+    now = time.time()
+    attempt_timestamps.setdefault(user_id, [])
+    # Remove timestamps older than 60 seconds
+    attempt_timestamps[user_id] = [t for t in attempt_timestamps[user_id] if now - t < 60]
+    if len(attempt_timestamps[user_id]) >= RATE_LIMIT:
+        await update.message.reply_text("🚫 Too many attempts per minute. Please wait a minute before trying again.")
+        return
+    attempt_timestamps[user_id].append(now)
+    # ------------------------------------------------------------------
+
+    # If the user is already in the group, send friendly message
     if await is_user_in_group(user_id, context):
         friendly_message = "🎉 Congratulations! You are already a valued member of the group. Enjoy your stay!"
         await send_and_schedule_delete(update, context, friendly_message)
         return
 
-    # If the user is blocked automatically
+    # Check if the user is blocked (automatic blocking)
     if user_id in blocked_users:
         await send_and_schedule_delete(update, context, "🚫 You have been blocked due to multiple incorrect attempts. Contact admin @SanchezC137Media.")
         return
@@ -264,7 +278,7 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         message += f"@{username} (ID: {user_id})\n"
     await update.message.reply_text(message)
 
-# ─── Global dictionary for manual blocked users (persisted) ─────────────
+# ─── Global Dictionary for Manual Blocked Users (persisted) ─────────────
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
 # ─── Handler Registration ─────────────────────────────────────────────────
@@ -280,9 +294,8 @@ if __name__ == "__main__":
     application.add_handler(CommandHandler("unblock", admin_unblock))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list))
 
-    # Run polling with optimized parameters:
-    # timeout=60 uses long polling to reduce API calls,
-    # poll_interval=1.0 sec waits between requests when idle.
+    # Run polling with optimized parameters: 
+    # timeout=60 uses long polling, poll_interval=1.0 sec waits between calls when idle.
     application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
