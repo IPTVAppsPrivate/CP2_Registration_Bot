@@ -107,18 +107,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def generate_invite_link(context):
     """Creates an invite link that expires after 12 seconds."""
     expire_time = datetime.utcnow() + timedelta(seconds=12)
+
     for attempt in range(MAX_RETRIES):
         try:
             invite_link = await context.bot.create_chat_invite_link(
                 GROUP_CHAT_ID,
-                expire_date=expire_time,
-                member_limit=1,
-                creates_join_request=True
+                expire_date=expire_time,  
+                member_limit=1,  
+                creates_join_request=True  
             )
             return invite_link.invite_link
         except Exception as e:
             logger.error(f"Attempt {attempt + 1} failed to generate invite link: {e}")
             await asyncio.sleep(2)
+    
     return None  # If all attempts fail, return None
 
 async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,19 +178,23 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if response_data.get("status") == "Valid":
             invite_link = await generate_invite_link(context)
+
             if invite_link:
                 success_message = escape_markdown(
                     f"✅ Your license key has been verified!\n\n"
                     f"Here is your invite link to the group: [Join Group]({invite_link})"
                 )
                 sent_message = await update.message.reply_text(success_message, parse_mode=constants.ParseMode.MARKDOWN_V2)
+
                 # 🔹 Save the license key as "used"
                 used_license_keys[license_key] = user_id
                 save_json_data(LICENSE_STORAGE_FILE, used_license_keys)
+
                 # Reset user's attempts on successful verification
                 if user_id in user_attempts:
                     del user_attempts[user_id]
                     save_json_data(ATTEMPTS_STORAGE_FILE, user_attempts)
+
                 # ⏳ Delete message after 25 minutes
                 asyncio.create_task(auto_delete_message(context, sent_message.chat_id, sent_message.message_id))
             else:
@@ -198,6 +204,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             user_attempts[user_id] = user_attempts.get(user_id, 0) + 1
             remaining_attempts = MAX_FAILED_ATTEMPTS - user_attempts[user_id]
             save_json_data(ATTEMPTS_STORAGE_FILE, user_attempts)
+
             if remaining_attempts <= 0:
                 # 🚫 Block the user if no attempts remain
                 blocked_users[user_id] = True
@@ -210,37 +217,54 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(
                     f"❌ Invalid license key. Please try again.\nYou have {remaining_attempts} attempts left."
                 )
+
     except requests.exceptions.RequestException:
         await update.message.reply_text("⚠️ Error verifying license key. Please try again later.")
+
     finally:
         users_in_progress.discard(user_id)
 
 async def unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Allows an admin to unblock a user by their Telegram ID."""
     global user_attempts, used_license_keys, blocked_users
+
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
+
+    # Extract user ID from the command
     message_parts = update.message.text.split()
     if len(message_parts) < 2:
         await update.message.reply_text("⚠️ Usage: /unblock <user_id>")
         return
-    user_id_to_unblock = message_parts[1]
+
+    user_id_to_unblock = message_parts[1]  # Extract second word (ID)
+
+    # Ensure it's a valid numeric ID
     if not user_id_to_unblock.isdigit():
         await update.message.reply_text("⚠️ Invalid user ID format.")
         return
+
+    # Convert to string (because keys are stored as strings)
     user_id_to_unblock = str(user_id_to_unblock)
+
+    # Unblock user by resetting attempts and removing license key association if needed
     if user_id_to_unblock in user_attempts:
         del user_attempts[user_id_to_unblock]
         save_json_data(ATTEMPTS_STORAGE_FILE, user_attempts)
+
+    # Remove the license key associated with the user if exists
     for license_key, user in list(used_license_keys.items()):
         if user == user_id_to_unblock:
             del used_license_keys[license_key]
-            break
+            break  # Stop after removing the first match
     save_json_data(LICENSE_STORAGE_FILE, used_license_keys)
+
+    # Remove from blocked users if present
     if user_id_to_unblock in blocked_users:
         del blocked_users[user_id_to_unblock]
         save_json_data(BLOCKED_USERS_FILE, blocked_users)
+
     logger.info(f"✅ Admin unblocked user {user_id_to_unblock}")
     await update.message.reply_text(f"✅ User {user_id_to_unblock} has been unblocked.")
 
@@ -249,9 +273,11 @@ async def list_blocked(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_USER_ID:
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
+
     if not blocked_users:
         await update.message.reply_text("✅ There are no blocked users.")
         return
+
     message = "🚫 Blocked Users:\n"
     for user_id in blocked_users.keys():
         message += f"- {user_id}\n"
@@ -267,22 +293,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("unblock", unblock))
     app.add_handler(CommandHandler("listblocked", list_blocked))
 
-    logger.info("🚀 Bot is starting...")
-
-    # Patch asyncio to allow nested event loops
-    import nest_asyncio
-    nest_asyncio.apply()
-
-    async def main():
-        # Delete webhook to avoid conflict with getUpdates polling
-        await app.bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Webhook deleted. Starting polling.")
-        await app.run_polling()
-
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.get_event_loop()
-
-    loop.create_task(main())
-    loop.run_forever()
+    logger.info("🚀 Bot is running...")
+    app.run_polling()
