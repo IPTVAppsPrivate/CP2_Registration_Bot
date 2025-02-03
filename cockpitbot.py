@@ -299,9 +299,22 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
 # --- Global Dictionary for Manual Blocked Users (persisted) ---
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
+# --- Set Commands Programmatically ---
+async def set_commands(bot):
+    commands = [
+        ("start", "Start the bot"),
+        ("block", "Block a user by username (admin only)"),
+        ("unblock", "Unblock a user by username (admin only)"),
+        ("blockuserslist", "List blocked users (admin only)")
+    ]
+    await bot.set_my_commands(commands)
+
 # --- Handler Registration ---
 if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    # Configure the bot's command list programmatically.
+    application.bot.loop.run_until_complete(set_commands(application.bot))
 
     # Register regular handlers (only process private chats)
     application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
