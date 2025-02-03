@@ -299,22 +299,9 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
 # --- Global Dictionary for Manual Blocked Users (persisted) ---
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
 
-# --- Set Commands Programmatically ---
-async def set_commands(bot):
-    commands = [
-        ("start", "Start the bot"),
-        ("block", "Block a user by username (admin only)"),
-        ("unblock", "Unblock a user by username (admin only)"),
-        ("blockuserslist", "List blocked users (admin only)")
-    ]
-    await bot.set_my_commands(commands)
-
-# --- Main function to set commands and run the bot ---
-async def main():
+# --- Handler Registration ---
+if __name__ == "__main__":
     application = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Set bot commands
-    await set_commands(application.bot)
 
     # Register regular handlers (only process private chats)
     application.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
@@ -326,21 +313,10 @@ async def main():
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
 
     # Run polling with optimized parameters: long polling with timeout=60 and poll_interval=1.0.
-    await application.run_polling(
+    application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
         timeout=60,
         poll_interval=1.0
     )
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except RuntimeError as e:
-        # Si el error indica que el event loop ya está corriendo, reutiliza el loop existente.
-        if "already running" in str(e):
-            loop = asyncio.get_event_loop()
-            loop.create_task(main())
-            loop.run_forever()
-        else:
-            raise e
