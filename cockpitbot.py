@@ -7,7 +7,12 @@ import time
 import asyncio
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from telegram import Update, constants
+from telegram import (
+    Update,
+    constants,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -15,6 +20,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
     CallbackContext,
+    ChatJoinRequestHandler,
+    CallbackQueryHandler
 )
 from requests.adapters import HTTPAdapter
 from urllib3.util.ssl_ import create_urllib3_context
@@ -72,11 +79,14 @@ LICENSE_STORAGE_FILE = "used_licenses.json"
 ATTEMPTS_STORAGE_FILE = "user_attempts.json"
 BLOCKED_USERS_FILE = "blocked_users.json"           # Automatic blocked user IDs (stored as list)
 BLOCKED_USERS_DICT_FILE = "blocked_users_dict.json"   # Manual blocked users (username: user_id)
+USER_DATA_FILE = "user_data.json"                     # Stores user display name info keyed by user ID
 
 # --- Global Variables Initialization ---
 failed_attempts = {}
 blocked_users = set(load_json_data(BLOCKED_USERS_FILE) or [])
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
+# This dictionary will store user details (username or first name) keyed by user id as string.
+user_data = load_json_data(USER_DATA_FILE) or {}
 processing_users = set()
 verification_codes = {}
 # Rate limiting: maximum 5 attempts per minute per user
@@ -87,6 +97,9 @@ MAX_FAILED_ATTEMPTS = 5
 DELETE_AFTER_SECONDS = 120  # 2 minutes
 # Set of users whose session is terminated (no further responses)
 session_ended = set()
+
+# --- New Global Variable for Verified Users ---
+verified_users = set()  # Holds user IDs whose license has been verified
 
 # --- Configure a Requests Session with TLSAdapter if needed ---
 session = requests.Session()
@@ -165,7 +178,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
-        "Once verified, I will send you the invite link to the group."
+        "Once verified, you'll receive an invite link. Please note that "
+        "when you join the group, your join request will require admin approval."
     )
     await send_and_schedule_delete(update, context, welcome_message)
 
@@ -173,8 +187,13 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles license key verification and invite link generation. Processes only private chats."""
     if update.message.chat.type != "private":
         return
-    global failed_attempts, blocked_users, verification_codes, attempt_timestamps, session_ended
+    global failed_attempts, blocked_users, verification_codes, attempt_timestamps, session_ended, verified_users, user_data
     user_id = update.effective_user.id
+
+    # Update user details in our storage (store using string key)
+    user_data[str(user_id)] = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
+    save_json_data(USER_DATA_FILE, user_data)
+
     license_key = update.message.text.strip()
     if user_id in session_ended:
         return
@@ -212,17 +231,30 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if response_data.get("status", "").lower() == "valid":
+        # If the license was already used by another user, block this user.
         if license_key in verification_codes and verification_codes[license_key] != user_id:
             blocked_users.add(user_id)
             save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
             if user_id not in session_ended:
-                await send_and_schedule_delete(update, context, "🚫 This verification code has already been used. Your session has ended. Contact admin @SanchezC137Media.")
+                await send_and_schedule_delete(
+                    update, context,
+                    "🚫 This verification code has already been used. Your session has ended. Contact admin."
+                )
                 session_ended.add(user_id)
             return
 
+        # Mark user as verified
+        verified_users.add(user_id)
+        
+        # Generate the invite link (the group should be set to require join requests)
         invite_link = await generate_invite_link(context)
         if invite_link:
-            success_message = f"✅ Your license key has been verified!\n\nHere is your invite link to the group: <tg-spoiler><a href=\"{invite_link}\">Join Group</a></tg-spoiler>"
+            success_message = (
+                f"✅ Your license key has been verified!\n\n"
+                f"Please click the link below to send a join request to the group. "
+                f"An administrator will review your request.\n\n"
+                f"<tg-spoiler><a href=\"{invite_link}\">Join Group</a></tg-spoiler>"
+            )
             await send_and_schedule_delete(update, context, success_message, parse_mode=constants.ParseMode.HTML)
             verification_codes[license_key] = user_id
             save_json_data(LICENSE_STORAGE_FILE, verification_codes)
@@ -235,7 +267,10 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             blocked_users.add(user_id)
             save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
             if user_id not in session_ended:
-                await send_and_schedule_delete(update, context, "🚫 Too many incorrect attempts. Your session has ended. Contact admin @SanchezC137Media.")
+                await send_and_schedule_delete(
+                    update, context,
+                    "🚫 Too many incorrect attempts. Your session has ended. Contact admin."
+                )
                 session_ended.add(user_id)
         else:
             attempts_left = MAX_FAILED_ATTEMPTS - failed_attempts[user_id]
@@ -291,7 +326,8 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Could not unblock user @{username}. Error: {str(e)}")
 
 async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lists all blocked users (both automatic and manual) for the admin."""
+    """Lists all blocked users (both automatic and manual) for the admin,
+    showing both ID and username (if available)."""
     if update.message.chat.type != "private":
         return
     if update.effective_user.id != int(ADMIN_USER_ID):
@@ -299,22 +335,36 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         return
 
     message = "🚫 Blocked Users:\n"
-    # List automatic blocked users from blocked_users set
+    # List automatic blocked users from the blocked_users set.
     if blocked_users:
-        message += "Automatic Blocks (IDs):\n"
+        message += "Automatic Blocks:\n"
         for user_id in blocked_users:
-            message += f"{user_id}\n"
+            # Try to get stored user info from our user_data dictionary (keys are strings)
+            user_info = user_data.get(str(user_id))
+            if user_info:
+                message += f"{user_info} (ID: {user_id})\n"
+            else:
+                # Fallback: attempt to get chat info from Telegram
+                try:
+                    user = await context.bot.get_chat(user_id)
+                    if user.username:
+                        user_info = f"@{user.username}"
+                    else:
+                        user_info = f"{user.first_name}"
+                except Exception:
+                    user_info = "username unknown"
+                message += f"{user_info} (ID: {user_id})\n"
     else:
         message += "No automatic blocks.\n"
-    
-    # List manual blocked users from blocked_users_dict
+
+    # List manual blocked users from the blocked_users_dict.
     if blocked_users_dict:
         message += "Manual Blocks:\n"
         for username, user_id in blocked_users_dict.items():
             message += f"@{username} (ID: {user_id})\n"
     else:
         message += "No manual blocks.\n"
-    
+
     await update.message.reply_text(message)
 
 async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -345,6 +395,67 @@ async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ User with ID {target_id} has been unblocked.")
     else:
         await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
+
+# --- New Handler for Join Requests (for the extra approval process) ---
+async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles a join request.
+    If the user is verified (license verified), notify the admin with inline buttons
+    so that the admin can approve or decline the join request.
+    Otherwise, automatically decline the join request.
+    """
+    join_request = update.chat_join_request
+    user = join_request.from_user
+    chat = join_request.chat
+
+    # Only allow join requests for verified users
+    if user.id in verified_users:
+        text = (
+            f"User {user.first_name} (@{user.username if user.username else 'no username'}) has requested to join the group.\n"
+            f"User ID: {user.id}"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("Approve", callback_data=f"approve:{user.id}"),
+                InlineKeyboardButton("Decline", callback_data=f"decline:{user.id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await context.bot.send_message(chat_id=int(ADMIN_USER_ID), text=text, reply_markup=reply_markup)
+    else:
+        # Decline join requests from users that are not verified
+        await context.bot.decline_chat_join_request(chat.id, user.id)
+
+# --- Callback Query Handler for Join Request Approval ---
+async def join_request_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Processes the inline button callbacks for approving or declining join requests.
+    Expected callback data format: "approve:<user_id>" or "decline:<user_id>".
+    """
+    query = update.callback_query
+    data = query.data
+    try:
+        user_id = int(data.split(":")[1])
+    except (IndexError, ValueError):
+        await query.answer("Invalid data")
+        return
+
+    if data.startswith("approve:"):
+        try:
+            await context.bot.approve_chat_join_request(GROUP_CHAT_ID, user_id)
+            await query.answer("User approved")
+            await query.edit_message_text(f"User with ID {user_id} approved.")
+        except Exception as e:
+            logger.error(f"Error approving join request for {user_id}: {e}")
+            await query.answer("Error approving join request")
+    elif data.startswith("decline:"):
+        try:
+            await context.bot.decline_chat_join_request(GROUP_CHAT_ID, user_id)
+            await query.answer("User declined")
+            await query.edit_message_text(f"User with ID {user_id} declined.")
+        except Exception as e:
+            logger.error(f"Error declining join request for {user_id}: {e}")
+            await query.answer("Error declining join request")
 
 # --- Global Dictionary for Manual Blocked Users (persisted) ---
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
@@ -379,6 +490,11 @@ async def main():
     application.add_handler(CommandHandler("unblock", admin_unblock, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("unblockid", admin_unblockid, filters=filters.ChatType.PRIVATE))
+
+    # Register handler for join requests
+    application.add_handler(ChatJoinRequestHandler(handle_join_request))
+    # Register callback query handler for inline buttons (join request approvals)
+    application.add_handler(CallbackQueryHandler(join_request_callback))
 
     # Run polling with optimized parameters: long polling with timeout=60, poll_interval=1.0, and don't close the event loop.
     await application.run_polling(
