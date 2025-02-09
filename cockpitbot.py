@@ -150,7 +150,7 @@ async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
     new_blocked_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
     blocked_users = new_blocked
     blocked_users_dict = new_blocked_dict
-    # Remover de session_ended a aquellos usuarios que ya no están bloqueados.
+    # Remove from session_ended those users that are no longer blocked.
     session_ended = {uid for uid in session_ended if uid in blocked_users}
     logger.info("Blocked users reloaded from file.")
 
@@ -291,18 +291,30 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Could not unblock user @{username}. Error: {str(e)}")
 
 async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lists all blocked users (by username and ID) for the admin."""
+    """Lists all blocked users (both automatic and manual) for the admin."""
     if update.message.chat.type != "private":
         return
     if update.effective_user.id != int(ADMIN_USER_ID):
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
-    if not blocked_users_dict:
-        await update.message.reply_text("✅ There are no blocked users.")
-        return
+
     message = "🚫 Blocked Users:\n"
-    for username, user_id in blocked_users_dict.items():
-        message += f"@{username} (ID: {user_id})\n"
+    # List automatic blocked users from blocked_users set
+    if blocked_users:
+        message += "Automatic Blocks (IDs):\n"
+        for user_id in blocked_users:
+            message += f"{user_id}\n"
+    else:
+        message += "No automatic blocks.\n"
+    
+    # List manual blocked users from blocked_users_dict
+    if blocked_users_dict:
+        message += "Manual Blocks:\n"
+        for username, user_id in blocked_users_dict.items():
+            message += f"@{username} (ID: {user_id})\n"
+    else:
+        message += "No manual blocks.\n"
+    
     await update.message.reply_text(message)
 
 async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -379,7 +391,7 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Creamos un nuevo event loop y lo establecemos para evitar conflictos
+        # Create a new event loop and set it to avoid conflicts
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(main())
