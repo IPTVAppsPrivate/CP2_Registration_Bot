@@ -94,8 +94,8 @@ RATE_LIMIT = 5
 attempt_timestamps = {}  # user_id -> list of timestamp floats
 MAX_RETRIES = 3
 MAX_FAILED_ATTEMPTS = 5
-DELETE_AFTER_SECONDS = 120  # 2 minutes
-# Set of users whose session is terminated (no further responses)
+DELETE_AFTER_SECONDS = 600  # 10 minutes (600 seconds)
+# Set of users whose session is terminated (blocked)
 session_ended = set()
 
 # --- New Global Variable for Verified Users ---
@@ -174,7 +174,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return  # Do not process messages from groups
     user_id = update.effective_user.id
     if user_id in session_ended:
-        return  # No response if session is terminated
+        await send_and_schedule_delete(update, context, "You are blocked. Please contact admin @SanchezC137Media.")
+        return
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
         "👋 Welcome! Please provide your license key for verification.\n\n"
@@ -194,9 +195,11 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data[str(user_id)] = update.effective_user.username if update.effective_user.username else update.effective_user.first_name
     save_json_data(USER_DATA_FILE, user_data)
 
-    license_key = update.message.text.strip()
     if user_id in session_ended:
+        await send_and_schedule_delete(update, context, "You are blocked. Please contact admin @SanchezC137Media.")
         return
+
+    license_key = update.message.text.strip()
 
     # Rate limiting: Allow max RATE_LIMIT attempts per minute
     now = time.time()
@@ -238,7 +241,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id not in session_ended:
                 await send_and_schedule_delete(
                     update, context,
-                    "🚫 This verification code has already been used. Your session has ended. Contact admin."
+                    "You are blocked. Please contact admin @SanchezC137Media."
                 )
                 session_ended.add(user_id)
             return
@@ -269,7 +272,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id not in session_ended:
                 await send_and_schedule_delete(
                     update, context,
-                    "🚫 Too many incorrect attempts. Your session has ended. Contact admin."
+                    "You are blocked. Please contact admin @SanchezC137Media."
                 )
                 session_ended.add(user_id)
         else:
@@ -302,28 +305,63 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Could not block user @{username}. Error: {str(e)}")
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Allows the admin to unblock a user by username."""
+    """
+    Unified command to unblock a user by either username or user ID,
+    handling both manual and automatic blocks.
+    Usage: /unblock <username or user_id>
+    """
     if update.message.chat.type != "private":
         return
     if update.effective_user.id != int(ADMIN_USER_ID):
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
     if not context.args:
-        await update.message.reply_text("Usage: /unblock <username>")
+        await update.message.reply_text("Usage: /unblock <username or user_id>")
         return
-    username = context.args[0].lstrip('@')
-    try:
-        if username not in blocked_users_dict:
-            await update.message.reply_text(f"❌ User @{username} is not blocked.")
-            return
-        user_id = blocked_users_dict.pop(username)
-        if user_id in blocked_users:
-            blocked_users.remove(user_id)
-        save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
-        save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
-        await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been unblocked.")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Could not unblock user @{username}. Error: {str(e)}")
+
+    identifier = context.args[0].strip()
+    target_id = None
+
+    # If the identifier is numeric, treat it as a user ID.
+    if identifier.isdigit():
+        target_id = int(identifier)
+    else:
+        # Otherwise, treat it as a username (strip "@" if present).
+        username = identifier.lstrip('@')
+        # First, check the manual block dictionary.
+        if username in blocked_users_dict:
+            target_id = blocked_users_dict[username]
+        else:
+            # If not found, search through automatically blocked users using stored user data.
+            for uid in blocked_users:
+                stored_username = user_data.get(str(uid))
+                if stored_username and stored_username.lower() == username.lower():
+                    target_id = uid
+                    break
+
+    if target_id is None:
+        await update.message.reply_text(f"❌ User {identifier} is not blocked.")
+        return
+
+    if target_id not in blocked_users:
+        await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
+        return
+
+    # Remove the user from the automatic block list.
+    blocked_users.remove(target_id)
+    # Also remove any entries in the manual block dictionary with this user ID.
+    keys_to_remove = [k for k, v in blocked_users_dict.items() if v == target_id]
+    for key in keys_to_remove:
+        del blocked_users_dict[key]
+
+    save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
+    save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
+    # Also remove the user from the terminated session set to allow future interactions.
+    session_ended.discard(target_id)
+
+    # Retrieve a display name from user_data if available.
+    display_name = user_data.get(str(target_id), f"ID {target_id}")
+    await update.message.reply_text(f"✅ User {display_name} (ID: {target_id}) has been unblocked.")
 
 async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lists all blocked users (both automatic and manual) for the admin,
@@ -465,7 +503,7 @@ async def set_commands(bot):
     commands = [
         ("start", "Start the bot"),
         ("block", "Block a user by username (admin only)"),
-        ("unblock", "Unblock a user by username (admin only)"),
+        ("unblock", "Unblock a user by username or ID (admin only)"),
         ("blockuserslist", "List blocked users (admin only)"),
         ("unblockid", "Unblock a user by ID (admin only)")
     ]
