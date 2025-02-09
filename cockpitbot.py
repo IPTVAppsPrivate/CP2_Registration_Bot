@@ -376,16 +376,13 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
     save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
-    # Also remove the user from the terminated session set to allow future interactions.
     session_ended.discard(target_id)
 
-    # Retrieve a display name from user_data if available.
     display_name = user_data.get(str(target_id), f"ID {target_id}")
     await update.message.reply_text(f"✅ User {display_name} (ID: {target_id}) has been unblocked. 🔓")
 
 async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lists all blocked users (both automatic and manual) for the admin,
-    showing both ID and username (if available)."""
+    """Lists all blocked users (both automatic and manual) for the admin, showing both ID and username (if available)."""
     if update.message.chat.type != "private":
         return
     if update.effective_user.id != int(ADMIN_USER_ID):
@@ -393,16 +390,13 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
         return
 
     message = "🚫 Blocked Users:\n"
-    # List automatic blocked users from the blocked_users set.
     if blocked_users:
         message += "Automatic Blocks:\n"
         for user_id in blocked_users:
-            # Try to get stored user info from our user_data dictionary (keys are strings)
             user_info = user_data.get(str(user_id))
             if user_info:
                 message += f"{user_info} (ID: {user_id})\n"
             else:
-                # Fallback: attempt to get chat info from Telegram
                 try:
                     user = await context.bot.get_chat(user_id)
                     if user.username:
@@ -415,7 +409,6 @@ async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT
     else:
         message += "No automatic blocks.\n"
 
-    # List manual blocked users from the blocked_users_dict.
     if blocked_users_dict:
         message += "Manual Blocks:\n"
         for username, user_id in blocked_users_dict.items():
@@ -442,18 +435,41 @@ async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if target_id in blocked_users:
         blocked_users.remove(target_id)
-        # Remove any entries in blocked_users_dict that have this user ID
         keys_to_remove = [k for k, v in blocked_users_dict.items() if v == target_id]
         for key in keys_to_remove:
             del blocked_users_dict[key]
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
-        # Also remove the user from the terminated session set to allow future interactions.
         session_ended.discard(target_id)
         await update.message.reply_text(f"✅ User with ID {target_id} has been unblocked. 🔓")
     else:
         await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
 
+# --- New Command: Free License ---
+async def admin_free_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Admin command to free (release) a previously used license key,
+    allowing it to be used again.
+    Usage: /free_license <license_key>
+    """
+    if update.message.chat.type != "private":
+        return
+    if update.effective_user.id != int(ADMIN_USER_ID):
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /free_license <license_key>")
+        return
+
+    license_key = context.args[0].strip()
+    if license_key in verification_codes:
+        del verification_codes[license_key]
+        save_json_data(LICENSE_STORAGE_FILE, verification_codes)
+        await update.message.reply_text(f"✅ License key '{license_key}' has been freed. 🔓")
+    else:
+        await update.message.reply_text(f"❌ License key '{license_key}' is not currently in use.")
+
+# --- Handler for Join Requests ---
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles a join request.
@@ -465,12 +481,10 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     user = join_request.from_user
     chat = join_request.chat
 
-    # Only allow join requests for verified users
     if user.id in verified_users:
         text = (
             f"👤 User {user.first_name} (@{user.username if user.username else 'no username'}) "
-            f"has requested to join the group.\n"
-            f"ID: {user.id}"
+            f"has requested to join the group.\nID: {user.id}"
         )
         keyboard = [
             [
@@ -523,7 +537,8 @@ async def set_commands(bot):
         ("block", "Block a user by username (admin only)"),
         ("unblock", "Unblock a user by username or ID (admin only)"),
         ("blockuserslist", "List blocked users (admin only)"),
-        ("unblockid", "Unblock a user by ID (admin only)")
+        ("unblockid", "Unblock a user by ID (admin only)"),
+        ("free_license", "Free a license key (admin only)")
     ]
     await bot.set_my_commands(commands)
 
@@ -546,6 +561,7 @@ async def main():
     application.add_handler(CommandHandler("unblock", admin_unblock, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("blockuserslist", admin_blocked_users_list, filters=filters.ChatType.PRIVATE))
     application.add_handler(CommandHandler("unblockid", admin_unblockid, filters=filters.ChatType.PRIVATE))
+    application.add_handler(CommandHandler("free_license", admin_free_license, filters=filters.ChatType.PRIVATE))
 
     # Register handler for join requests
     application.add_handler(ChatJoinRequestHandler(handle_join_request))
