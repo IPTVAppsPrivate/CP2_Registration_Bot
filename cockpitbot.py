@@ -171,10 +171,10 @@ async def reload_blocked_users(context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the /start command. Processes only private chats."""
     if update.message.chat.type != "private":
-        return  # Do not process messages from groups
+        return
     user_id = update.effective_user.id
     if user_id in session_ended:
-        await send_and_schedule_delete(update, context, "You are blocked. Please contact admin @SanchezC137Media.")
+        await send_and_schedule_delete(update, context, "🚫 You are blocked. Please contact admin @SanchezC137Media.")
         return
     logger.info(f"Received /start from user: {user_id}")
     welcome_message = (
@@ -196,7 +196,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_json_data(USER_DATA_FILE, user_data)
 
     if user_id in session_ended:
-        await send_and_schedule_delete(update, context, "You are blocked. Please contact admin @SanchezC137Media.")
+        await send_and_schedule_delete(update, context, "🚫 You are blocked. Please contact admin @SanchezC137Media.")
         return
 
     license_key = update.message.text.strip()
@@ -241,7 +241,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id not in session_ended:
                 await send_and_schedule_delete(
                     update, context,
-                    "You are blocked. Please contact admin @SanchezC137Media."
+                    "🚫 You are blocked. Please contact admin @SanchezC137Media."
                 )
                 session_ended.add(user_id)
             return
@@ -272,7 +272,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if user_id not in session_ended:
                 await send_and_schedule_delete(
                     update, context,
-                    "You are blocked. Please contact admin @SanchezC137Media."
+                    "🚫 You are blocked. Please contact admin @SanchezC137Media."
                 )
                 session_ended.add(user_id)
         else:
@@ -283,7 +283,7 @@ async def handle_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Administrative Commands (only process in private chats) ---
 
 async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Allows the admin to block a user by username."""
+    """Allows the admin to block a user by username, using stored data as fallback."""
     if update.message.chat.type != "private":
         return
     if update.effective_user.id != int(ADMIN_USER_ID):
@@ -292,17 +292,37 @@ async def admin_block(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Usage: /block <username>")
         return
-    username = context.args[0].lstrip('@')
+
+    username_input = context.args[0].lstrip('@')
     try:
-        chat = await context.bot.get_chat(username)
-        user_id = chat.id
-        blocked_users.add(user_id)
-        blocked_users_dict[username] = user_id
-        save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
-        save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
-        await update.message.reply_text(f"✅ User @{username} (ID: {user_id}) has been blocked.")
+        # Try to get the chat info directly from Telegram
+        chat = await context.bot.get_chat(username_input)
     except Exception as e:
-        await update.message.reply_text(f"❌ Could not block user @{username}. Error: {str(e)}")
+        # If direct lookup fails, search in the stored user data (ignoring case)
+        chat = None
+        for uid, stored_username in user_data.items():
+            if stored_username.lower() == username_input.lower():
+                try:
+                    chat = await context.bot.get_chat(uid)
+                    break
+                except Exception:
+                    continue
+        if chat is None:
+            await update.message.reply_text(f"❌ Could not block user @{username_input}. Error: {str(e)}")
+            return
+
+    user_id = chat.id
+    # Use chat.username if available; otherwise, use stored data.
+    if chat.username:
+        block_username = chat.username
+    else:
+        block_username = user_data.get(str(user_id), username_input)
+
+    blocked_users.add(user_id)
+    blocked_users_dict[block_username] = user_id
+    save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
+    save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
+    await update.message.reply_text(f"✅ User @{block_username} (ID: {user_id}) has been blocked. 🔒")
 
 async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -361,7 +381,7 @@ async def admin_unblock(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Retrieve a display name from user_data if available.
     display_name = user_data.get(str(target_id), f"ID {target_id}")
-    await update.message.reply_text(f"✅ User {display_name} (ID: {target_id}) has been unblocked.")
+    await update.message.reply_text(f"✅ User {display_name} (ID: {target_id}) has been unblocked. 🔓")
 
 async def admin_blocked_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lists all blocked users (both automatic and manual) for the admin,
@@ -428,13 +448,12 @@ async def admin_unblockid(update: Update, context: ContextTypes.DEFAULT_TYPE):
             del blocked_users_dict[key]
         save_json_data(BLOCKED_USERS_FILE, list(blocked_users))
         save_json_data(BLOCKED_USERS_DICT_FILE, blocked_users_dict)
-        # Also remove the user from the terminated session set to allow future interactions
+        # Also remove the user from the terminated session set to allow future interactions.
         session_ended.discard(target_id)
-        await update.message.reply_text(f"✅ User with ID {target_id} has been unblocked.")
+        await update.message.reply_text(f"✅ User with ID {target_id} has been unblocked. 🔓")
     else:
         await update.message.reply_text(f"❌ User with ID {target_id} is not in the block list.")
 
-# --- New Handler for Join Requests (for the extra approval process) ---
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Handles a join request.
@@ -449,22 +468,21 @@ async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Only allow join requests for verified users
     if user.id in verified_users:
         text = (
-            f"User {user.first_name} (@{user.username if user.username else 'no username'}) has requested to join the group.\n"
-            f"User ID: {user.id}"
+            f"👤 User {user.first_name} (@{user.username if user.username else 'no username'}) "
+            f"has requested to join the group.\n"
+            f"ID: {user.id}"
         )
         keyboard = [
             [
-                InlineKeyboardButton("Approve", callback_data=f"approve:{user.id}"),
-                InlineKeyboardButton("Decline", callback_data=f"decline:{user.id}")
+                InlineKeyboardButton("✅ Approve", callback_data=f"approve:{user.id}"),
+                InlineKeyboardButton("❌ Decline", callback_data=f"decline:{user.id}")
             ]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.send_message(chat_id=int(ADMIN_USER_ID), text=text, reply_markup=reply_markup)
     else:
-        # Decline join requests from users that are not verified
         await context.bot.decline_chat_join_request(chat.id, user.id)
 
-# --- Callback Query Handler for Join Request Approval ---
 async def join_request_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
     Processes the inline button callbacks for approving or declining join requests.
@@ -475,25 +493,25 @@ async def join_request_callback(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         user_id = int(data.split(":")[1])
     except (IndexError, ValueError):
-        await query.answer("Invalid data")
+        await query.answer("❌ Invalid data")
         return
 
     if data.startswith("approve:"):
         try:
             await context.bot.approve_chat_join_request(GROUP_CHAT_ID, user_id)
-            await query.answer("User approved")
-            await query.edit_message_text(f"User with ID {user_id} approved.")
+            await query.answer("✅ User approved")
+            await query.edit_message_text(f"✅ User with ID {user_id} approved.")
         except Exception as e:
             logger.error(f"Error approving join request for {user_id}: {e}")
-            await query.answer("Error approving join request")
+            await query.answer("❌ Error approving join request")
     elif data.startswith("decline:"):
         try:
             await context.bot.decline_chat_join_request(GROUP_CHAT_ID, user_id)
-            await query.answer("User declined")
-            await query.edit_message_text(f"User with ID {user_id} declined.")
+            await query.answer("❌ User declined")
+            await query.edit_message_text(f"❌ User with ID {user_id} declined.")
         except Exception as e:
             logger.error(f"Error declining join request for {user_id}: {e}")
-            await query.answer("Error declining join request")
+            await query.answer("❌ Error declining join request")
 
 # --- Global Dictionary for Manual Blocked Users (persisted) ---
 blocked_users_dict = load_json_data(BLOCKED_USERS_DICT_FILE) or {}
@@ -534,7 +552,7 @@ async def main():
     # Register callback query handler for inline buttons (join request approvals)
     application.add_handler(CallbackQueryHandler(join_request_callback))
 
-    # Run polling with optimized parameters: long polling with timeout=60, poll_interval=1.0, and don't close the event loop.
+    # Run polling with optimized parameters
     await application.run_polling(
         allowed_updates=Update.ALL_TYPES,
         drop_pending_updates=True,
@@ -545,7 +563,6 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # Create a new event loop and set it to avoid conflicts
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(main())
